@@ -35,7 +35,7 @@ task.h is included from an application file. */
 
 /* FreeRTOS includes. */
 #include "FreeRTOS.h"
-#include "task.h"
+#include "tasks.h"
 #include "timers.h"
 #include "event_groups.h"
 

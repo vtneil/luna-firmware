@@ -36,7 +36,7 @@ task.h is included from an application file. */
 
 /* FreeRTOS includes. */
 #include "FreeRTOS.h"
-#include "task.h"
+#include "tasks.h"
 #include "stream_buffer.h"
 
 #if( configUSE_TASK_NOTIFICATIONS != 1 )

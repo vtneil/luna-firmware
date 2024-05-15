@@ -26,7 +26,7 @@
 #include "cmsis_compiler.h"             // Compiler agnostic definitions
 
 #include "FreeRTOS.h"                   // ARM.FreeRTOS::RTOS:Core
-#include "task.h"                       // ARM.FreeRTOS::RTOS:Core
+#include "tasks.h"                      // ARM.FreeRTOS::RTOS:Core
 #include "event_groups.h"               // ARM.FreeRTOS::RTOS:Event Groups
 #include "semphr.h"                     // ARM.FreeRTOS::RTOS:Core
 
