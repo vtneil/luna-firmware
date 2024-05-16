@@ -1,7 +1,6 @@
 #ifndef LUNA_FIRMWARE_TASKS_H
 #define LUNA_FIRMWARE_TASKS_H
 
-#include <cstdlib>
 #include <cstdint>
 #include <concepts>
 #include <type_traits>
@@ -27,11 +26,11 @@ namespace vt {
         concept task_fn = detail::void_fn<T> || detail::void_fn_arg<T>;
     }  // namespace detail
 
-    template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType = uint32_t>
+    template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
-    class tasks;
+    class task_dispatcher;
 
-    template<template<typename> class SmartDelay, std::integral TimeType = uint32_t>
+    template<template<typename> class SmartDelay, std::integral TimeType>
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
     class task_t {
     public:
@@ -53,17 +52,42 @@ namespace vt {
         priority_t m_priority;
 
     public:
-        task_t()                             = delete;
-        constexpr task_t(const task_t &)     = default;
-        constexpr task_t(task_t &&) noexcept = default;
+        task_t()
+            : m_func{nullptr}, m_arg(nullptr),
+              m_sd{smart_delay_t(0, nullptr)}, m_priority{0} {}
+
+        task_t(const task_t &)     = default;
+        task_t(task_t &&) noexcept = default;
 
         template<detail::task_fn TaskFuncType>
-        constexpr task_t(TaskFuncType *task_func, void *arg, TimeType interval, time_func_t time_func, priority_t priority = 0)
+        task_t(TaskFuncType *task_func, void *arg, TimeType interval, time_func_t time_func, priority_t priority = 0)
             : m_func{reinterpret_cast<func_ptr<void *> *>(task_func)}, m_arg(arg),
               m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
 
+        task_t &operator=(const task_t &other) {
+            if (this == &other) {
+                return *this;
+            }
+
+            m_func     = other.m_func;
+            m_arg      = other.m_arg;
+            m_sd       = other.m_sd;
+            m_priority = other.m_priority;
+
+            return *this;
+        }
+
+        task_t &operator=(task_t &&other) noexcept {
+            m_func     = std::move(other.m_func);
+            m_arg      = std::move(other.m_arg);
+            m_sd       = std::move(other.m_sd);
+            m_priority = std::move(other.m_priority);
+
+            return *this;
+        }
+
         void operator()() {
-            if ((m_func != nullptr) && m_sd) {
+            if (m_func != nullptr && m_sd) {
                 m_func(m_arg);
             }
         }
@@ -75,29 +99,33 @@ namespace vt {
 
     template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
-    class tasks {
+    class task_dispatcher {
         static_assert(MaxTasks > 0, "Scheduler size cannot be zero.");
 
     private:
-        using task_t             = task_t<SmartDelay, TimeType>;
+        using Task             = task_t<SmartDelay, TimeType>;
 
-        size_t m_size            = {};
-        task_t m_tasks[MaxTasks] = {};
+        size_t m_size          = {};
+        Task m_tasks[MaxTasks] = {};
 
     public:
-        tasks()                  = default;
-        tasks(const tasks &)     = delete;
-        tasks(tasks &&) noexcept = delete;
+        task_dispatcher()                            = default;
+        task_dispatcher(const task_dispatcher &)     = default;
+        task_dispatcher(task_dispatcher &&) noexcept = default;
 
-        tasks &operator<<(task_t &&task) {
+        task_dispatcher &operator+=(Task &&task) {
+            return this->operator<<(std::forward<Task>(task));
+        }
+
+        task_dispatcher &operator<<(Task &&task) {
             if (m_size < MaxTasks) {
                 size_t i;
                 for (i = 0; i < m_size && m_tasks[i].m_priority < task.m_priority; ++i)
                     ;
                 for (size_t j = 0; j < m_size - i; ++j) {
-                    m_tasks[m_size - j] = m_tasks[m_size - j - 1];
+                    m_tasks[m_size - j] = std::move(m_tasks[m_size - j - 1]);
                 }
-                m_tasks[i] = task;
+                m_tasks[i] = std::move(task);
                 ++m_size;
             }
 
