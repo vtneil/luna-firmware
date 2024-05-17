@@ -2,13 +2,25 @@
 #define ARDUINO_EXTENDED_H
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <stm32h7xx_ll_adc.h>
 
 namespace traits {
     template<typename S>
-    concept has_ostream = requires(S s, String str) {
+    concept has_ostream = requires(S s, const char *str) {
         { s << str } -> std::same_as<S &>;
     };
+
+    template<typename S>
+    concept arduino_stream_derived = std::derived_from<S, Stream>;
+
+    template<typename S>
+    concept stream_has_flush = requires(S s) {
+        { s.flush() } -> std::same_as<void>;
+    };
+
+    template<typename S>
+    concept ostream_flush = has_ostream<S> && stream_has_flush<S>;
 }  // namespace traits
 
 namespace stream {
@@ -21,23 +33,30 @@ namespace stream {
     constexpr detail::flush_type flush = detail::flush_type();
 }  // namespace stream
 
-// Stream as iostream
-
-template<typename T>
-Stream &operator<<(Stream &stream, T &&s) {
-    stream.print(std::forward<T>(s));
+template<traits::arduino_stream_derived S, typename T>
+S &operator<<(S &stream, T &&v) {
+    stream.print(std::forward<T>(v));
     return stream;
 }
 
-// String as ostream
-
 template<typename T>
-String &operator<<(String &string, T &&s) {
-    string += std::forward<T>(s);
+String &operator<<(String &string, T &&v) {
+    string += std::forward<T>(v);
     return string;
 }
 
 namespace detail {
+    template<typename T>
+        requires traits::has_ostream<T>
+    struct flush_ostream {
+        static constexpr bool value = false;
+    };
+
+    template<traits::ostream_flush T>
+    struct flush_ostream<T> {
+        static constexpr bool value = true;
+    };
+
     template<traits::has_ostream OStream,
              size_t ReserveSize = 0,
              bool NewLine       = false>
@@ -74,6 +93,10 @@ namespace detail {
 
             // Flush to stream
             *m_stream << m_string;
+
+            if constexpr (flush_ostream<OStream>::value) {
+                m_stream->flush();
+            }
         }
     };
 }  // namespace detail
@@ -90,6 +113,11 @@ detail::csv_stream<OStream, ReserveSize, NewLine> csv_stream(OStream &stream) {
     return detail::csv_stream<OStream, ReserveSize, NewLine>(stream);
 }
 
+template<traits::has_ostream OStream, size_t ReserveSize = 0, bool NewLine = true>
+detail::csv_stream<OStream, ReserveSize, NewLine> csv_stream_crlf(OStream &stream) {
+    return detail::csv_stream<OStream, ReserveSize, NewLine>(stream);
+}
+
 // IO Pin as stream
 
 inline uint32_t to_digital(const PinName pin_name) {
@@ -103,23 +131,33 @@ namespace detail {
     concept io_func = std::derived_from<T, IOFunction>;
 }  // namespace detail
 
-struct On : detail::IOFunction {
-    PinName m_pin;
+namespace io_function {
+    struct pull_high : detail::IOFunction {
+        PinName m_pin;
 
-    explicit On(const PinName pin) : m_pin{pin} {}
-};
+        constexpr explicit pull_high(const PinName pin) : m_pin{pin} {}
+    };
 
-struct Off : detail::IOFunction {
-    PinName m_pin;
+    struct pull_low : detail::IOFunction {
+        PinName m_pin;
 
-    explicit Off(const PinName pin) : m_pin{pin} {}
-};
+        constexpr explicit pull_low(const PinName pin) : m_pin{pin} {}
+    };
 
-struct Toggle : detail::IOFunction {
-    PinName m_pin;
+    struct toggle : detail::IOFunction {
+        PinName m_pin;
 
-    explicit Toggle(const PinName pin) : m_pin{pin} {}
-};
+        constexpr explicit toggle(const PinName pin) : m_pin{pin} {}
+    };
+
+    struct set : detail::IOFunction {
+        PinName m_pin;
+        uint32_t m_val;
+
+        constexpr explicit set(const PinName pin, const uint32_t val) : m_pin{pin}, m_val{val} {}
+    };
+
+}  // namespace io_function
 
 namespace detail {
     // GPIO as ostream
@@ -127,26 +165,33 @@ namespace detail {
     public:
         template<io_func IoFuncType>
         io_direction_t &operator<<(IoFuncType func) {
-            if constexpr (std::is_same_v<IoFuncType, On>) {
-                digitalWriteFast(func.m_pin, 1);
-            } else if constexpr (std::is_same_v<IoFuncType, Off>) {
-                digitalWriteFast(func.m_pin, 0);
-            } else if constexpr (std::is_same_v<IoFuncType, Toggle>) {
+            if constexpr (std::is_same_v<IoFuncType, ::io_function::pull_high>) {
+                digitalWriteFast(func.m_pin, HIGH);
+            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::pull_low>) {
+                digitalWriteFast(func.m_pin, LOW);
+            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::toggle>) {
                 digitalToggle(func.m_pin);
+            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::set>) {
+                digitalWriteFast(func.m_pin, func.m_val);
             }
             return *this;
         }
     };
 
     // GPIO Config as stream
-    class io_configuration_t {
+    template<int Val>
+    class digital_out_configuration_t {
     public:
-        io_configuration_t &operator<<(const PinName pin) {
+        digital_out_configuration_t &operator<<(const PinName pin) {
             pinMode(to_digital(pin), OUTPUT);
+            digitalWriteFast(pin, Val);
             return *this;
         }
+    };
 
-        io_configuration_t &operator>>(const PinName pin) {
+    class digital_in_configuration_t {
+    public:
+        digital_in_configuration_t &operator<<(const PinName pin) {
             pinMode(to_digital(pin), INPUT);
             return *this;
         }
@@ -154,7 +199,9 @@ namespace detail {
 }  // namespace detail
 
 inline detail::io_direction_t gpio_write;
-inline detail::io_configuration_t gpio_config;
+inline detail::digital_out_configuration_t<LOW> dout_low;
+inline detail::digital_out_configuration_t<HIGH> dout_high;
+inline detail::digital_in_configuration_t din_config;
 
 namespace internal {
     inline int32_t read_vref() {
@@ -165,5 +212,47 @@ namespace internal {
         return __LL_ADC_CALC_TEMPERATURE(VRef, analogRead(ATEMP), LL_ADC_RESOLUTION_16B);
     }
 }  // namespace internal
+
+// I2C Scanner
+inline void i2c_detect(Stream &output_stream,
+                       TwoWire &i2c_wire,
+                       const uint8_t addr_from,
+                       const uint8_t addr_to) {
+    char buf[10];
+
+    output_stream.print("   ");
+    for (uint8_t i = 0; i < 16; i++) {
+        sprintf(buf, "%3x", i);
+        output_stream.print(buf);
+    }
+
+    for (uint8_t addr = 0; addr < 0x80; addr++) {
+        if (addr % 16 == 0) {
+            sprintf(buf, "\n%02x:", addr & 0xF0);
+            output_stream.print(buf);
+        }
+        if (addr >= addr_from && addr <= addr_to) {
+            i2c_wire.beginTransmission(addr);
+            uint8_t resp = i2c_wire.endTransmission();
+            if (resp == 0) {
+                // device found
+                //stream.printf(" %02x", addr);
+                sprintf(buf, " %02x", addr);
+                output_stream.print(buf);
+            } else if (resp == 4) {
+                // other resp
+                output_stream.print(" XX");
+            } else {
+                // resp = 2: received NACK on transmit of addr
+                // resp = 3: received NACK on transmit of data
+                output_stream.print(" --");
+            }
+        } else {
+            // addr not scanned
+            output_stream.print("   ");
+        }
+    }
+    output_stream.println("\n");
+}
 
 #endif  //ARDUINO_EXTENDED_H

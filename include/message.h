@@ -4,6 +4,36 @@
 #include <concepts>
 
 namespace luna {
+    struct sensor_data_t {
+        // Message Time
+        uint32_t timestamp;
+        uint32_t pc;
+
+        // State
+        state_t ps;
+        uint8_t pyro_a;
+        uint8_t pyro_b;
+        uint8_t pyro_c;
+
+        // Internal
+        int32_t temp_cpu;
+
+        // GNSS
+        double gps_lat;
+        double gps_lon;
+        float gps_alt;
+
+        // MS1
+        float ms1_pres;
+        float ms1_temp;
+
+        // MS2
+        float ms2_pres;
+        float ms2_temp;
+    };
+}  // namespace luna
+
+namespace luna {
     enum class state_t : uint8_t;
 
     enum class payload_type : uint8_t {
@@ -47,6 +77,7 @@ namespace luna {
         float gps_lat;
         float gps_lon;
         state_t ps;
+        int32_t temp_cpu;
     };
 
     // Fixed-length 64 byte (512 bit) 8-aligned command

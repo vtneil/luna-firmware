@@ -1,0 +1,7 @@
+#ifndef LUNA_PERIPHERAL_DEF_H
+#define LUNA_PERIPHERAL_DEF_H
+
+#define UBLOX_CUSTOM_MAX_WAIT (250u)
+#define SD_SPI_CLOCK_MHZ      (20u)
+
+#endif  //LUNA_PERIPHERAL_DEF_H

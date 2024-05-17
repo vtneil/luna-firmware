@@ -47,6 +47,10 @@ namespace vt {
             return *this;
         }
 
+        bool operator()() {
+            return operator bool();
+        }
+
         explicit operator bool() {
             if (m_func == nullptr) {
                 return false;

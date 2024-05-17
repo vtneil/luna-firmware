@@ -9,8 +9,8 @@ namespace luna::pins {
         constexpr PinName LED_G  = PE_13;  // Onboard RGB LED G
         constexpr PinName LED_B  = PE_14;  // Onboard RGB LED B
         constexpr PinName BUZZER = PD_9;   // Onboard buzzer
-        constexpr PinName USER_1 = PF_8;   // Onboard push button 1
-        constexpr PinName USER_2 = PF_9;   // Onboard push button 2
+        constexpr PinName USER_1 = PF_9;   // Onboard push button 1
+        constexpr PinName USER_2 = PF_8;   // Onboard push button 2
     }  // namespace gpio
 
     namespace pyro {
@@ -42,18 +42,21 @@ namespace luna::pins {
     }  // namespace comm
 
     namespace spi {
+        // ch1: icm-42688, ms1
         namespace ch1 {
             constexpr PinName SCK  = PA_5;
             constexpr PinName MISO = PA_6;
             constexpr PinName MOSI = PA_7;
         }  // namespace ch1
 
+        // ch3: sd, flash
         namespace ch3 {
             constexpr PinName SCK  = PC_10;
             constexpr PinName MISO = PC_11;
             constexpr PinName MOSI = PC_12;
         }  // namespace ch3
 
+        // ch4: icm-20948, ms2
         namespace ch4 {
             constexpr PinName SCK  = PE_2;
             constexpr PinName MISO = PE_5;
@@ -69,6 +72,11 @@ namespace luna::pins {
             constexpr PinName flash    = PD_10;
         }  // namespace cs
     }  // namespace spi
+
+    namespace i2c::ch1 {
+        constexpr PinName SDA = PB_7;
+        constexpr PinName SCL = PB_8;
+    }  // namespace i2c::ch1
 
     namespace tmc2209 {
         constexpr PinName UART_TX = PC_6;

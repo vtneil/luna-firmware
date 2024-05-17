@@ -15,17 +15,6 @@ namespace vt {
         } && std::integral<T>;
     }  // namespace traits
 
-    namespace detail {
-        template<typename T>
-        concept void_fn = std::is_same_v<T, void()>;
-
-        template<typename T>
-        concept void_fn_arg = std::is_same_v<T, void(void *)>;
-
-        template<typename T>
-        concept task_fn = detail::void_fn<T> || detail::void_fn_arg<T>;
-    }  // namespace detail
-
     template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
     class task_dispatcher;
@@ -34,19 +23,24 @@ namespace vt {
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
     class task_t {
     public:
-        template<typename Arg>
-        using func_ptr    = void(Arg);
+        typedef void (*func_ptr)();
+        typedef void (*func_ptr_arg)(void *);
         using time_func_t = TimeType();
         using priority_t  = uint8_t;
 
+        struct addition_struct {
+            task_t task;
+            bool pred;
+        };
+
         template<size_t MaxTasks, template<typename> class, std::integral>
             requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
-        friend class tasks;
+        friend class task_dispatcher;
 
     private:
         using smart_delay_t = SmartDelay<TimeType>;
 
-        func_ptr<void *> *m_func;
+        func_ptr_arg m_func;
         void *m_arg;
         smart_delay_t m_sd;
         priority_t m_priority;
@@ -59,10 +53,12 @@ namespace vt {
         task_t(const task_t &)     = default;
         task_t(task_t &&) noexcept = default;
 
-        template<detail::task_fn TaskFuncType>
-        task_t(TaskFuncType *task_func, void *arg, TimeType interval, time_func_t time_func, priority_t priority = 0)
-            : m_func{reinterpret_cast<func_ptr<void *> *>(task_func)}, m_arg(arg),
+        task_t(const func_ptr_arg task_func, void *arg, TimeType interval, time_func_t time_func, const priority_t priority = 0)
+            : m_func{task_func}, m_arg(arg),
               m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
+
+        task_t(const func_ptr task_func, void *arg, TimeType interval, time_func_t time_func, const priority_t priority = 0)
+            : task_t(reinterpret_cast<func_ptr_arg>(task_func), arg, interval, time_func, priority) {}
 
         task_t &operator=(const task_t &other) {
             if (this == &other) {
@@ -95,6 +91,10 @@ namespace vt {
         void reset() {
             m_sd.reset();
         }
+
+        addition_struct operator,(const bool pred) const {
+            return {std::move(*this), pred};
+        }
     };
 
     template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
@@ -112,6 +112,17 @@ namespace vt {
         task_dispatcher()                            = default;
         task_dispatcher(const task_dispatcher &)     = default;
         task_dispatcher(task_dispatcher &&) noexcept = default;
+
+        task_dispatcher &operator+=(typename Task::addition_struct &&task_struct) {
+            return this->operator<<(std::forward<Task>(task_struct));
+        }
+
+        task_dispatcher &operator<<(typename Task::addition_struct &&task_struct) {
+            if (task_struct.pred) {
+                this->operator<<(std::move(task_struct.task));
+            }
+            return *this;
+        }
 
         task_dispatcher &operator+=(Task &&task) {
             return this->operator<<(std::forward<Task>(task));
