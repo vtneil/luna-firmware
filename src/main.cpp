@@ -7,12 +7,15 @@
 
 #include <Arduino.h>
 #include "Arduino_Extended.h"
+
 #include <SoftwareSerial.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BusIO_Register.h>
 #include <Wire.h>
 #include <SPI.h>
+
 #include "luna_pin_def.h"
+#include "luna_state_def.h"
 #include "smart_delay.h"
 #include "tasks.h"
 #include "message.h"
@@ -30,7 +33,7 @@ using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
 // Hardware instances
 
 // HardwareSerial Serial2(luna::pins::comm::lora::UART_RX, luna::pins::comm::lora::UART_TX);
-// HardwareSerial Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
+HardwareSerial Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
 
 // TwoWire
 
@@ -38,12 +41,17 @@ using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
 
 // USBSerial &UART_USB          = Serial;
 // HardwareSerial &UART_LORA    = Serial2;
-// HardwareSerial &UART_RFD900X = Serial4;
+HardwareSerial &UART_RFD900X = Serial4;
 
 // Software data
 
 luna::header_t header;
 luna::data_t data;
+
+// Machine state
+vt::fsm<luna::state_t> fsm(luna::state_t::STARTUP);
+
+void fsm_map();
 
 void setup() {
     // GPIO and Digital Pins
@@ -59,7 +67,7 @@ void setup() {
     // UART Interfaces
     // UART_USB.begin(UART_BAUD);
     // UART_LORA.begin(UART_BAUD);
-    // UART_RFD900X.begin(UART_BAUD);
+    UART_RFD900X.begin(UART_BAUD);
 }
 
 void loop() {
@@ -68,11 +76,15 @@ void loop() {
                << Toggle(luna::pins::gpio::LED_B)
                << Toggle(luna::pins::pyro::SIG_A)
                << Toggle(luna::pins::pyro::SIG_B)
+               << Toggle(luna::pins::pyro::SIG_C)
                << Toggle(luna::pins::gpio::BUZZER);
 
-    digitalWriteFast(luna::pins::pyro::SIG_C, digitalReadFast(luna::pins::gpio::USER_1) || digitalReadFast(luna::pins::gpio::USER_2));
-
-    // UART_USB << "Clock" << SystemCoreClock << stream::crlf;
+    UART_RFD900X << "Clock: " << SystemCoreClock << stream::crlf;
 
     delayMicroseconds(250UL * 1000UL);
+}
+
+void fsm_map() {
+    // switch (fsm.state()) {
+    // }
 }

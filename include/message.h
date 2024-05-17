@@ -4,6 +4,8 @@
 #include <concepts>
 
 namespace luna {
+    enum class state_t : uint8_t;
+
     enum class payload_type : uint8_t {
         DATA = 0,
         COMMAND,
@@ -14,13 +16,14 @@ namespace luna {
         UPLINK,
     };
 
-    enum class command_type : uint8_t {
+    enum class command_type : uint16_t {
         PING = 0,
         PONG,
 
         SET_STATE = 16,
     };
 
+    // Fixed-length 16 byte (128 bit) 4-aligned command
     struct header_t {
         // 32 bit team identifier
         char team_id[4];
@@ -29,7 +32,7 @@ namespace luna {
         uint8_t hwid;
         payload_type type;
         transmit_direction direction;
-        uint8_t _padding;
+        uint8_t aux;
 
         // 32 bit payload size information
         uint32_t data_size;
@@ -39,14 +42,47 @@ namespace luna {
     };
 
     struct data_t {
+        uint32_t timestamp;
+        uint32_t pc;
+        float gps_lat;
+        float gps_lon;
+        state_t ps;
     };
 
+    // Fixed-length 64 byte (512 bit) 8-aligned command
     struct command_t {
+        // 64 bit aligned 16-bit command
+        command_type command;
+        uint16_t aux[3];
+
+        // 64 bit command registers
+        union {
+            uint64_t u64;
+            int64_t i64;
+            uint32_t u32[2];
+            int32_t i32[2];
+            uint16_t u16[4];
+            int16_t i16[4];
+            uint8_t u8[8];
+            int8_t i8[8];
+            double fp64;
+            float fp32[2];
+        } r[7];
     };
+
+    namespace detail {
+        template<typename T>
+        concept payload_type = std::same_as<T, data_t> || std::same_as<T, command_t>;
+    }
 
     struct message_t {
         header_t header;
         void *data;
+
+        template<detail::payload_type PayloadType>
+        PayloadType &get() {
+            return *static_cast<PayloadType *>(data);
+        }
     };
 
     template<typename InputType, std::integral OutputType>

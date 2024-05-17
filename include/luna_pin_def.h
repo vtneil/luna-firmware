@@ -59,6 +59,15 @@ namespace luna::pins {
             constexpr PinName MISO = PE_5;
             constexpr PinName MOSI = PE_6;
         }  // namespace ch4
+
+        namespace cs {
+            constexpr PinName icm42688 = PG_10;
+            constexpr PinName icm20948 = PE_3;
+            constexpr PinName ms1      = PG_11;
+            constexpr PinName ms2      = PE_4;
+            constexpr PinName sd       = PC_1;
+            constexpr PinName flash    = PD_10;
+        }  // namespace cs
     }  // namespace spi
 
     namespace tmc2209 {

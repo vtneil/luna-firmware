@@ -2,6 +2,7 @@
 #define ARDUINO_EXTENDED_H
 
 #include <Arduino.h>
+#include <stm32h7xx_ll_adc.h>
 
 namespace traits {
     template<typename S>
@@ -154,5 +155,15 @@ namespace detail {
 
 inline detail::io_direction_t gpio_write;
 inline detail::io_configuration_t gpio_config;
+
+namespace internal {
+    inline int32_t read_vref() {
+        return __LL_ADC_CALC_VREFANALOG_VOLTAGE(analogRead(AVREF), LL_ADC_RESOLUTION_16B);
+    }
+
+    inline int32_t read_cpu_temp(const int32_t VRef) {
+        return __LL_ADC_CALC_TEMPERATURE(VRef, analogRead(ATEMP), LL_ADC_RESOLUTION_16B);
+    }
+}  // namespace internal
 
 #endif  //ARDUINO_EXTENDED_H
