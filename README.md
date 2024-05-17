@@ -2,6 +2,7 @@
 
 ## Hardware interface status
 
+- ✅ Correct CPU Clock
 - ✅ MS5611 MS1 SPI
 - ✅ MS5611 MS2 SPI
 - ❌ GNSS M9V I2C
@@ -12,3 +13,4 @@
 - ❌ SPI Flash
 - ✅ Hardware UART (Serial)
 - ❌ USB CDC Serial
+- ✅ Low Power Mode with Hardware UART Wake up
