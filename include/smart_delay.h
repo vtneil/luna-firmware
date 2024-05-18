@@ -79,6 +79,10 @@ namespace vt {
                 m_prev_time = m_func();
             }
         }
+
+        constexpr TimeType interval() const {
+            return m_true_interval;
+        }
     };
 }  // namespace vt
 

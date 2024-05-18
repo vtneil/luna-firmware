@@ -24,6 +24,7 @@
 #include "luna_pin_def.h"
 #include "luna_state_def.h"
 #include "luna_peripheral_def.h"
+#include "avionics_algorithm.h"
 #include "smart_delay.h"
 #include "tasks.h"
 #include "message.h"
@@ -170,11 +171,11 @@ void setup() {
     // Storage Initialization
     pvalid.flash = flash.begin(SdSpiConfig(luna::pins::spi::cs::flash,
                                            SHARED_SPI,
-                                           SD_SCK_MHZ(SD_SPI_CLOCK_MHZ),
+                                           SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
                                            &SPI_3));
     pvalid.sd    = sd.begin(SdSpiConfig(luna::pins::spi::cs::sd,
                                         SHARED_SPI,
-                                        SD_SCK_MHZ(SD_SPI_CLOCK_MHZ),
+                                        SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
                                         &SPI_3));
 
     if (pvalid.flash) {

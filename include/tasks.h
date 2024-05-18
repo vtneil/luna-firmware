@@ -95,6 +95,10 @@ namespace vt {
         addition_struct operator,(const bool pred) const {
             return {std::move(*this), pred};
         }
+
+        constexpr TimeType interval() const {
+            return m_sd.interval();
+        }
     };
 
     template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
