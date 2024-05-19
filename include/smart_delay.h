@@ -17,7 +17,7 @@ namespace vt {
         uint32_t m_true_interval   = {};
 
     public:
-        smart_delay(TimeType interval, time_func_t *time_func) : m_func{time_func}, m_target_interval{interval} {
+        smart_delay(TimeType interval, time_func_t *time_func) : m_func{time_func}, m_target_interval{interval}, m_true_interval(interval) {
             if (time_func != nullptr)
                 m_prev_time = time_func();
         }

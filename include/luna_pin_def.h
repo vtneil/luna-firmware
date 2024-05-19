@@ -4,6 +4,9 @@
 #include <PinNames.h>
 
 namespace luna::pins {
+    namespace power {
+        constexpr PinName PIN_24V = PB_12;
+    }
     namespace gpio {
         constexpr PinName LED_R  = PE_12;  // Onboard RGB LED R
         constexpr PinName LED_G  = PE_13;  // Onboard RGB LED G
@@ -83,7 +86,5 @@ namespace luna::pins {
         constexpr PinName UART_RX = PC_7;
     }  // namespace tmc2209
 }  // namespace luna::pins
-
-constexpr unsigned long UART_BAUD = 115200;
 
 #endif  //LUNA_FIRMWARE_LUNA_PIN_DEF_H

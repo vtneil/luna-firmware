@@ -1,6 +1,9 @@
 #ifndef AVIONICS_ALGORITHM_H
 #define AVIONICS_ALGORITHM_H
 
+#include <Arduino.h>
+#include "Arduino_Extended.h"
+
 namespace algorithm {
     namespace detail {
 
@@ -44,6 +47,10 @@ namespace algorithm {
             return m_ema;
         }
 
+        void operator>>(double &targ) const {
+            targ = get();
+        }
+
         void reset() {
             m_ema  = 0.0;
             m_init = 0;
@@ -59,7 +66,9 @@ namespace algorithm {
         double m_K;  // Kalman gain
 
     public:
-        KalmanFilter_1D(const double initial_x, const double initial_P, const double Q, const double R)
+        constexpr KalmanFilter_1D() : KalmanFilter_1D(initial_x, initial_P, initial_noise, initial_noise) {}
+
+        constexpr KalmanFilter_1D(const double initial_x, const double initial_P, const double Q, const double R)
             : m_x(initial_x), m_P(initial_P), m_Q(Q), m_R(R), m_K(0.0) {
         }
 
@@ -92,7 +101,10 @@ namespace algorithm {
             return m_P;
         }
 
-    public:
+        void operator>>(double &targ) const {
+            targ = x();
+        }
+
         static constexpr double initial_x     = 0.0;
         static constexpr double initial_P     = 1.0;
         static constexpr double initial_noise = 0.1;

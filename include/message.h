@@ -1,124 +1,19 @@
 #ifndef LUNA_FIRMWARE_MESSAGE_H
 #define LUNA_FIRMWARE_MESSAGE_H
 
+#include <Arduino.h>
+#include "Arduino_Extended.h"
 #include <concepts>
+#include "luna_state_def.h"
 
 namespace luna {
-    struct sensor_data_t {
-        // Message Time
-        uint32_t timestamp;
-        uint32_t pc;
-
-        // State
-        state_t ps;
-        uint8_t pyro_a;
-        uint8_t pyro_b;
-        uint8_t pyro_c;
-
-        // Internal
-        int32_t temp_cpu;
-
-        // GNSS
-        double gps_lat;
-        double gps_lon;
-        float gps_alt;
-
-        // MS1
-        float ms1_pres;
-        float ms1_temp;
-
-        // MS2
-        float ms2_pres;
-        float ms2_temp;
-    };
-}  // namespace luna
-
-namespace luna {
-    enum class state_t : uint8_t;
-
-    enum class payload_type : uint8_t {
-        DATA = 0,
-        COMMAND,
-    };
-
-    enum class transmit_direction : uint8_t {
-        DOWNLINK = 0,
-        UPLINK,
-    };
-
-    enum class command_type : uint16_t {
-        PING = 0,
-        PONG,
-
-        SET_STATE = 16,
-    };
-
-    // Fixed-length 16 byte (128 bit) 4-aligned command
-    struct header_t {
-        // 32 bit team identifier
-        char team_id[4];
-
-        // 32 bit header information
-        uint8_t hwid;
-        payload_type type;
-        transmit_direction direction;
-        uint8_t aux;
-
-        // 32 bit payload size information
-        uint32_t data_size;
-
-        // 32 bit checksum
-        uint32_t data_checksum;
-    };
-
-    struct data_t {
-        uint32_t timestamp;
-        uint32_t pc;
-        float gps_lat;
-        float gps_lon;
-        state_t ps;
-        int32_t temp_cpu;
-    };
-
-    // Fixed-length 64 byte (512 bit) 8-aligned command
-    struct command_t {
-        // 64 bit aligned 16-bit command
-        command_type command;
-        uint16_t aux[3];
-
-        // 64 bit command registers
-        union {
-            uint64_t u64;
-            int64_t i64;
-            uint32_t u32[2];
-            int32_t i32[2];
-            uint16_t u16[4];
-            int16_t i16[4];
-            uint8_t u8[8];
-            int8_t i8[8];
-            double fp64;
-            float fp32[2];
-        } r[7];
-    };
-
-    namespace detail {
-        template<typename T>
-        concept payload_type = std::same_as<T, data_t> || std::same_as<T, command_t>;
-    }
-
-    struct message_t {
-        header_t header;
-        void *data;
-
-        template<detail::payload_type PayloadType>
-        PayloadType &get() {
-            return *static_cast<PayloadType *>(data);
-        }
-    };
-
     template<typename InputType, std::integral OutputType>
     class crypto_checksum {
     public:
+        OutputType operator()(void *input) const {
+            return this->operator()(*static_cast<InputType *>(input));
+        }
+
         OutputType operator()(const InputType &input) const {
             OutputType output;
             calc_checksum_impl(input, &output);
@@ -177,6 +72,173 @@ namespace luna {
 
             // Return value
             *result = result_tmp;
+        }
+    };
+
+    enum class state_t : uint8_t;
+
+    enum class pyro_state_t : uint8_t;
+
+    template<typename T>
+    union axis_data_u {
+        T values[3]{};
+        struct {
+            T x;
+            T y;
+            T z;
+        };
+    };
+
+    union regs_u {
+        uint64_t u64{};
+        int64_t i64;
+        uint32_t u32[2];
+        int32_t i32[2];
+        uint16_t u16[4];
+        int16_t i16[4];
+        uint8_t u8[8];
+        int8_t i8[8];
+        double fp64;
+        float fp32[2];
+    };
+
+    struct sensor_data_t {
+        // Message Time (64 bit)
+        uint32_t timestamp{};
+        uint32_t pc{};
+
+        // State and pyro state (32 bit)
+        state_t ps{};
+        pyro_state_t pyro_a{};
+        pyro_state_t pyro_b{};
+        pyro_state_t pyro_c{};
+
+        // Internal (32 bit)
+        int32_t cpu_temp{};
+
+        // Pyro continuity (24 bit)
+        uint8_t cont_a{};
+        uint8_t cont_b{};
+        uint8_t cont_c{};
+
+        // GNSS (8 bit + 128 bit + 32 bit)
+        uint8_t gps_siv{};
+        double gps_lat{};
+        double gps_lon{};
+        float gps_alt{};
+
+        // MS1 (96 bit)
+        float ms1_pres{};
+        float ms1_temp{};
+        float ms1_alt{};
+
+        // MS2 (128 bit)
+        float ms2_pres{};
+        float ms2_temp{};
+        float ms2_alt{};
+        float aux{};
+
+        // IMU ICM42688 (384 bit)
+        struct {
+            axis_data_u<double> acc;
+            axis_data_u<double> gyro;
+        } imu_1;
+
+        // IMU ICM20948 (576 bit)
+        struct {
+            axis_data_u<double> acc;
+            axis_data_u<double> gyro;
+            axis_data_u<double> mag;
+        } imu_2;
+    };
+
+    enum class payload_type : uint8_t {
+        DATA = 0,
+        COMMAND,
+    };
+
+    enum class transmit_direction : uint8_t {
+        DOWNLINK = 0,
+        UPLINK,
+    };
+
+    enum class command_type : uint16_t {
+        PING = 0,
+        PONG,
+
+        SET_STATE = 16,
+    };
+
+    // Fixed-length 16 byte (128 bit) 4-aligned command
+    struct header_t {
+        // 32 bit team identifier
+        char team_id[4]{};
+
+        // 32 bit header information
+        uint8_t hwid{};
+        payload_type type{};
+        transmit_direction direction{};
+        uint8_t aux{};
+
+        // 32 bit payload size information
+        uint32_t data_size{};
+
+        // 32 bit checksum
+        uint32_t data_checksum{};
+    };
+
+    struct data_t {
+        uint32_t timestamp{};
+        uint32_t pc{};
+        float gps_lat{};
+        float gps_lon{};
+        state_t ps{};
+        int32_t temp_cpu{};
+    };
+
+    // Fixed-length 64 byte (512 bit) 8-aligned command
+    struct command_t {
+        // 64 bit aligned 16-bit command
+        command_type command{};
+        uint16_t aux[3]{};
+
+        // 64 bit command registers
+        regs_u r[7];
+    };
+
+    namespace detail {
+        template<typename T>
+        concept payload_type = std::same_as<T, data_t> || std::same_as<T, command_t>;
+    }
+
+    struct message_t {
+        header_t &header;
+        void *data{};
+
+        constexpr message_t(header_t &header, void *data) : header{header}, data{data} {}
+
+        template<detail::payload_type PayloadType>
+        const PayloadType &get() const {
+            return *static_cast<const PayloadType *const>(data);
+        }
+
+        template<detail::payload_type PayloadType>
+        bool verify() const {
+        }
+
+        Stream &operator>>(Stream &stream) const {
+            if (header.type == payload_type::DATA) {
+                header.data_size     = sizeof(data_t);
+                header.data_checksum = crypto_checksum<data_t, uint32_t>()(data);
+                stream.write(byte_cast(&header), sizeof(header_t));
+                stream.write(byte_cast(data), sizeof(data_t));
+            } else {
+                header.data_size     = sizeof(command_t);
+                header.data_checksum = crypto_checksum<command_t, uint32_t>()(data);
+                stream.write(byte_cast(&header), sizeof(header_t));
+                stream.write(byte_cast(data), sizeof(command_t));
+            }
+            return stream;
         }
     };
 }  // namespace luna

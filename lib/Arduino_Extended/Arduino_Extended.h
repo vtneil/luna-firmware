@@ -1,6 +1,7 @@
 #ifndef ARDUINO_EXTENDED_H
 #define ARDUINO_EXTENDED_H
 
+#include <cmath>
 #include <Arduino.h>
 #include <Wire.h>
 #include <stm32h7xx_ll_adc.h>
@@ -113,9 +114,9 @@ detail::csv_stream<OStream, ReserveSize, NewLine> csv_stream(OStream &stream) {
     return detail::csv_stream<OStream, ReserveSize, NewLine>(stream);
 }
 
-template<traits::has_ostream OStream, size_t ReserveSize = 0, bool NewLine = true>
-detail::csv_stream<OStream, ReserveSize, NewLine> csv_stream_crlf(OStream &stream) {
-    return detail::csv_stream<OStream, ReserveSize, NewLine>(stream);
+template<traits::has_ostream OStream, size_t ReserveSize = 0>
+detail::csv_stream<OStream, ReserveSize, true> csv_stream_crlf(OStream &stream) {
+    return csv_stream<OStream, ReserveSize, true>(stream);
 }
 
 // IO Pin as stream
@@ -159,22 +160,55 @@ namespace io_function {
 
 }  // namespace io_function
 
+struct analog_pin {
+    const PinName pin;
+
+    explicit constexpr analog_pin(const PinName pin) : pin{pin} {}
+};
+
 namespace detail {
+    struct SampleStatus {
+        int status = {};
+        int value  = {};
+
+        [[nodiscard]] constexpr bool stable() const { return status == 1; }
+    };
+
     // GPIO as ostream
-    class io_direction_t {
-    public:
+    struct gpio_write_t {
         template<io_func IoFuncType>
-        io_direction_t &operator<<(IoFuncType func) {
-            if constexpr (std::is_same_v<IoFuncType, ::io_function::pull_high>) {
+        gpio_write_t &operator<<(IoFuncType func) {
+            if constexpr (std::is_same_v<IoFuncType, io_function::pull_high>) {
                 digitalWriteFast(func.m_pin, HIGH);
-            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::pull_low>) {
+            } else if constexpr (std::is_same_v<IoFuncType, io_function::pull_low>) {
                 digitalWriteFast(func.m_pin, LOW);
-            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::toggle>) {
-                digitalToggle(func.m_pin);
-            } else if constexpr (std::is_same_v<IoFuncType, ::io_function::set>) {
+            } else if constexpr (std::is_same_v<IoFuncType, io_function::toggle>) {
+                digitalToggleFast(func.m_pin);
+            } else if constexpr (std::is_same_v<IoFuncType, io_function::set>) {
                 digitalWriteFast(func.m_pin, func.m_val);
             }
             return *this;
+        }
+    };
+
+    struct gpio_read_t {
+        int operator()(const PinName pin) const {
+            return digitalReadFast(pin);
+        }
+
+        template<size_t Sample>
+        [[nodiscard]] int sample(const PinName pin) const {
+            static_assert(Sample > 0, "Sample count must be non-zero.");
+
+            if constexpr (Sample == 1) {
+                return this->operator()(pin);
+            } else {
+                size_t count[2] = {};
+                for (size_t i = 0; i < Sample - 1; ++i) {
+                    ++count[this->operator()(pin)];
+                }
+                return count[1] > count[0];
+            }
         }
     };
 
@@ -198,7 +232,8 @@ namespace detail {
     };
 }  // namespace detail
 
-inline detail::io_direction_t gpio_write;
+inline detail::gpio_write_t gpio_write;
+inline detail::gpio_read_t gpio_read;
 inline detail::digital_out_configuration_t<LOW> dout_low;
 inline detail::digital_out_configuration_t<HIGH> dout_high;
 inline detail::digital_in_configuration_t din_config;
@@ -219,7 +254,7 @@ inline void i2c_detect(Stream &output_stream,
                        const uint8_t addr_from,
                        const uint8_t addr_to) {
     char buf[10];
-
+    output_stream.println("I2C Detector");
     output_stream.print("   ");
     for (uint8_t i = 0; i < 16; i++) {
         sprintf(buf, "%3x", i);
@@ -233,8 +268,7 @@ inline void i2c_detect(Stream &output_stream,
         }
         if (addr >= addr_from && addr <= addr_to) {
             i2c_wire.beginTransmission(addr);
-            uint8_t resp = i2c_wire.endTransmission();
-            if (resp == 0) {
+            if (const uint8_t resp = i2c_wire.endTransmission(); resp == 0) {
                 // device found
                 //stream.printf(" %02x", addr);
                 sprintf(buf, " %02x", addr);
@@ -253,6 +287,18 @@ inline void i2c_detect(Stream &output_stream,
         }
     }
     output_stream.println("\n");
+}
+
+inline double pressure_altitude(const double pressure_hpa) {
+    constexpr double h0  = 44307.69396;
+    constexpr double p0  = 1013.25;
+    const double h_ratio = pressure_hpa / p0;
+    const double v       = 1 - std::pow(h_ratio, 0.190284);
+    return h0 * v;
+}
+
+constexpr uint8_t *byte_cast(void *ptr) {
+    return static_cast<uint8_t *>(ptr);
 }
 
 #endif  //ARDUINO_EXTENDED_H

@@ -6,6 +6,13 @@
 #include <type_traits>
 
 namespace vt {
+    namespace functional {
+        template<typename T>
+        constexpr auto ptr_to_void_cast(void (*func)(T *)) -> void (*)(void *) {
+            return reinterpret_cast<void (*)(void *)>(func);
+        }
+    }  // namespace functional
+
     namespace traits {
         template<typename C, typename T>
         concept smart_delay_variant = requires(T value, T (*func_ptr)()) {
@@ -23,10 +30,16 @@ namespace vt {
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
     class task_t {
     public:
-        typedef void (*func_ptr)();
-        typedef void (*func_ptr_arg)(void *);
-        using time_func_t = TimeType();
-        using priority_t  = uint8_t;
+        template<typename T>
+        using func_ptr_Targ = void (*)(T *);
+
+        template<typename T>
+        using func_ptr_Tref = void (*)(T &);
+
+        using func_ptr      = void (*)();
+        using func_ptr_arg  = func_ptr_Targ<void>;
+        using time_func_t   = TimeType();
+        using priority_t    = uint8_t;
 
         struct addition_struct {
             task_t task;
@@ -53,12 +66,16 @@ namespace vt {
         task_t(const task_t &)     = default;
         task_t(task_t &&) noexcept = default;
 
-        task_t(const func_ptr_arg task_func, void *arg, TimeType interval, time_func_t time_func, const priority_t priority = 0)
-            : m_func{task_func}, m_arg(arg),
+        // Function taking argument pointer
+        template<typename Arg>
+        task_t(func_ptr_Targ<Arg> task_func, Arg *arg, const TimeType interval, const time_func_t time_func, const priority_t priority = 0)
+            : m_func{functional::ptr_to_void_cast(task_func)}, m_arg(arg),
               m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
 
-        task_t(const func_ptr task_func, void *arg, TimeType interval, time_func_t time_func, const priority_t priority = 0)
-            : task_t(reinterpret_cast<func_ptr_arg>(task_func), arg, interval, time_func, priority) {}
+        // Function taking nothing
+        task_t(const func_ptr task_func, const TimeType interval, const time_func_t time_func, const priority_t priority = 0)
+            : m_func{reinterpret_cast<func_ptr_arg>(task_func)}, m_arg(nullptr),
+              m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
 
         task_t &operator=(const task_t &other) {
             if (this == &other) {
@@ -150,6 +167,12 @@ namespace vt {
         void operator()() {
             for (size_t i = 0; i < m_size; ++i) {
                 m_tasks[i]();
+            }
+        }
+
+        void reset() {
+            for (size_t i = 0; i < m_size; ++i) {
+                m_tasks[i].reset();
             }
         }
 

@@ -10,18 +10,18 @@ namespace vt {
     template<detail::enum_type StateType>
     class fsm {
     protected:
-        StateType m_prev;
-        StateType m_state;
+        StateType m_prev{};
+        StateType m_state{};
 
     public:
-        explicit fsm(const StateType initial_state)
+        constexpr explicit fsm(const StateType initial_state)
             : m_prev{initial_state}, m_state{initial_state} {}
 
-        constexpr StateType state() const {
+        [[nodiscard]] constexpr StateType state() const {
             return m_state;
         }
 
-        constexpr StateType prev() const {
+        [[nodiscard]] constexpr StateType prev() const {
             return m_prev;
         }
 
