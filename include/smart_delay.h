@@ -17,7 +17,7 @@ namespace vt {
         uint32_t m_true_interval   = {};
 
     public:
-        smart_delay(TimeType interval, time_func_t *time_func) : m_func{time_func}, m_target_interval{interval}, m_true_interval(interval) {
+        smart_delay(TimeType interval, time_func_t *time_func) : m_func{time_func}, m_target_interval{interval}, m_true_interval{interval} {
             if (time_func != nullptr)
                 m_prev_time = time_func();
         }
@@ -83,6 +83,32 @@ namespace vt {
         constexpr TimeType interval() const {
             return m_true_interval;
         }
+
+        void set_interval(const TimeType new_interval) {
+            m_target_interval = new_interval;
+            m_true_interval   = new_interval;
+        }
+
+        struct on_off {
+            TimeType t_on;
+            TimeType t_off;
+        };
+    };
+
+    template<std::integral TimeType>
+    class on_off_timer {
+    public:
+        using time_func_t = TimeType();
+        using SmartDelay  = smart_delay<TimeType>;
+
+    private:
+        SmartDelay sd_on;
+        SmartDelay sd_off;
+
+    public:
+        on_off_timer(TimeType interval_on, TimeType interval_off, time_func_t *time_func)
+            : sd_on{SmartDelay(interval_on, time_func)}, sd_off{SmartDelay(interval_off, time_func)} {}
+
     };
 }  // namespace vt
 

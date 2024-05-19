@@ -46,6 +46,11 @@ String &operator<<(String &string, T &&v) {
     return string;
 }
 
+struct FakeOStream {
+    template<typename T>
+    constexpr FakeOStream &operator<<(T &&) { return *this; }
+};
+
 namespace detail {
     template<typename T>
         requires traits::has_ostream<T>
@@ -196,6 +201,8 @@ namespace detail {
             return digitalReadFast(pin);
         }
 
+        // 480 MHz: 20 MHz sample rate (20 samples per microsecond)
+        // 24 clock cycles per sample
         template<size_t Sample>
         [[nodiscard]] int sample(const PinName pin) const {
             static_assert(Sample > 0, "Sample count must be non-zero.");

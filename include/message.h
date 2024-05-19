@@ -105,7 +105,7 @@ namespace luna {
     struct sensor_data_t {
         // Message Time (64 bit)
         uint32_t timestamp{};
-        uint32_t pc{};
+        uint32_t tx_pc{};
 
         // State and pyro state (32 bit)
         state_t ps{};
@@ -150,6 +150,9 @@ namespace luna {
             axis_data_u<double> gyro;
             axis_data_u<double> mag;
         } imu_2;
+
+        uint8_t last_ack{};
+        uint8_t last_nack{};
     };
 
     enum class payload_type : uint8_t {

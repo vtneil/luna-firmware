@@ -71,8 +71,10 @@ struct ms_ref_t {
     float &temp;
     float &pres;
     float &alt;
+    algorithm::KalmanFilter_1D &kf;
 
-    ms_ref_t(MS5611_SPI &t_ms, float &t_temp, float &t_pres, float &t_alt) : ms{t_ms}, temp{t_temp}, pres{t_pres}, alt{t_alt} {}
+    ms_ref_t(MS5611_SPI &t_ms, float &t_temp, float &t_pres, float &t_alt, algorithm::KalmanFilter_1D &t_kf)
+        : ms{t_ms}, temp{t_temp}, pres{t_pres}, alt{t_alt}, kf{t_kf} {}
 };
 
 // Hardware interfaces
@@ -106,7 +108,17 @@ luna::sensor_data_t sensor_data;
 uint8_t rx_buffer[luna::config::MESSAGE_BUFFER_SIZE];
 
 // Software filters
-algorithm::KalmanFilter_1D kf[10];
+struct software_filters {
+    struct {
+        luna::axis_data_u<algorithm::KalmanFilter_1D> acc;
+        luna::axis_data_u<algorithm::KalmanFilter_1D> gyro;
+    } imu_1;
+
+    algorithm::KalmanFilter_1D ms1_pres;
+    algorithm::KalmanFilter_1D ms2_pres;
+};
+
+software_filters filters;
 
 // Communication data
 
@@ -120,8 +132,10 @@ luna::header_t tx_header = {
         0  // Data checksum: must modify
 };
 luna::data_t tx_data;
-
 luna::message_t tx_message(tx_header, &tx_data);
+
+time_type tx_interval  = luna::config::TX_IDLE_INTERVAL;
+time_type log_interval = luna::config::LOG_IDLE_INTERVAL;
 
 // Peripherals
 
@@ -139,8 +153,8 @@ ICM42688 imu_icm42688(SPI_1, to_digital(luna::pins::spi::cs::icm42688));
 MS5611_SPI ms1(to_digital(luna::pins::spi::cs::ms1), &SPI_1);
 MS5611_SPI ms2(to_digital(luna::pins::spi::cs::ms2), &SPI_4);
 
-ms_ref_t ms1_ref = {ms1, sensor_data.ms1_temp, sensor_data.ms1_pres, sensor_data.ms1_alt};
-ms_ref_t ms2_ref = {ms2, sensor_data.ms2_temp, sensor_data.ms2_pres, sensor_data.ms2_alt};
+ms_ref_t ms1_ref = {ms1, sensor_data.ms1_temp, sensor_data.ms1_pres, sensor_data.ms1_alt, filters.ms1_pres};
+ms_ref_t ms2_ref = {ms2, sensor_data.ms2_temp, sensor_data.ms2_pres, sensor_data.ms2_alt, filters.ms2_pres};
 
 // Software control
 dispatcher_type<20> dispatcher;
@@ -161,15 +175,15 @@ extern void read_icm20948();
 
 extern void read_icm42688();
 
-extern void accept_command();
+extern void accept_command(Stream *istream);
 
-extern void transmit_data();
+extern void transmit_data(time_type *interval_ms);
 
 extern void debug();
 
-extern void save_data();
+extern void save_data(time_type *interval_ms);
 
-extern void fsm_map();
+extern void fsm_eval();
 
 void setup() {
     // GPIO and Digital Pins
@@ -268,10 +282,14 @@ void setup() {
     // GPS
     pvalid.gnss_m9v = gnss_m9v.begin(Wire1);
     if (pvalid.gnss_m9v) {
+        // Basic configuration
         gnss_m9v.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
-        gnss_m9v.setNavigationFrequency(5, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
+        gnss_m9v.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
         gnss_m9v.setAutoPVT(true, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
         gnss_m9v.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
+
+        // Dead reckoning
+        // ???
 
         // Optional
         gnss_m9v.saveConfiguration(luna::config::UBLOX_CUSTOM_MAX_WAIT);
@@ -279,25 +297,34 @@ void setup() {
 
     // Task initialization
     dispatcher << task_type(read_continuity, 1000ul, micros, 0)
-               << task_type(fsm_map, 50ul * 1000ul, micros, 1)
-               << (task_type(read_icm42688, 10ul, millis, 2), pvalid.imu_icm42688)
+
+               << task_type(fsm_eval, 50ul * 1000ul, micros, 1)
+
+               << (task_type(read_icm20948, 10ul * 1000ul, micros, 1), pvalid.imu_icm20948)
+               << (task_type(read_icm42688, 10ul * 1000ul, micros, 1), pvalid.imu_icm42688)
                << (task_type(read_ms, &ms1_ref, 100ul, millis, 2), pvalid.ms1)
                << (task_type(read_ms, &ms2_ref, 100ul, millis, 2), pvalid.ms2)
                << (task_type(read_gnss, 50ul, millis, 2), pvalid.gnss_m9v)
+
+               << task_type(transmit_data, &tx_interval, 0ul, millis, 253)  // Adaptive
+               << task_type(save_data, &log_interval, 0ul, millis, 253)     // Adaptive
+
                << task_type(debug, 100ul, millis, 254)
                << task_type(read_core_temp, 500ul, millis, 255);
 
     // Low power mode
     // See details: https://github.com/stm32duino/STM32LowPower/blob/main/README.md
     LowPower.begin();
-    LowPower.enableWakeupFrom(&USB_DEBUG, []() -> void {
-        USB_DEBUG << "Wake up call triggered." << stream::crlf;
+    LowPower.enableWakeupFrom(&UART_RFD900X, []() -> void {
+        accept_command(&UART_RFD900X);
     });
 
     // Peripheral validation
     pvalid >> USB_DEBUG << stream::crlf;
-
     USB_DEBUG << "Init successful!" << stream::crlf;
+
+    // States
+    sensor_data.ps = luna::state_t::IDLE_SAFE;
 
     // Reset timers before starting
     dispatcher.reset();
@@ -306,18 +333,310 @@ void setup() {
 void loop() { dispatcher(); }
 
 void init_storage(SdExFat &sd_instance) {
+    // todo: init file
 }
 
 void read_continuity() {
+    sensor_data.cont_a = gpio_read.sample<128>(luna::pins::pyro::SENS_A);
+    sensor_data.cont_b = gpio_read.sample<128>(luna::pins::pyro::SENS_B);
+    sensor_data.cont_c = gpio_read.sample<128>(luna::pins::pyro::SENS_C);
+}
+
+void read_core_temp() {
+    sensor_data.cpu_temp = internal::read_cpu_temp(internal::read_vref());
+}
+
+void read_gnss() {
+    if (gnss_m9v.getPVT(luna::config::UBLOX_CUSTOM_MAX_WAIT)) {
+        sensor_data.timestamp = gnss_m9v.getUnixEpoch(luna::config::UBLOX_CUSTOM_MAX_WAIT);
+        sensor_data.gps_siv   = gnss_m9v.getSIV(luna::config::UBLOX_CUSTOM_MAX_WAIT);
+        sensor_data.gps_lat   = static_cast<double>(gnss_m9v.getLatitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+        sensor_data.gps_lon   = static_cast<double>(gnss_m9v.getLongitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+        sensor_data.gps_alt   = static_cast<float>(gnss_m9v.getAltitudeMSL(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+    }
+}
+
+void read_ms(ms_ref_t *ms) {
+    ms->ms.read();
+    ms->temp = ms->ms.getTemperature();
+    ms->kf << ms->ms.getPressure();
+    ms->pres = ms->kf.x();
+    ms->alt  = pressure_altitude(ms->pres);
+}
+
+void read_icm20948() {
+}
+
+void read_icm42688() {
+    imu_icm42688.readAccGyro(reinterpret_cast<double *>(&sensor_data.imu_1));
+    for (size_t i = 0; i < 3; ++i) {
+        // Acc KF
+        filters.imu_1.acc.values[i] << sensor_data.imu_1.acc.values[i];
+        sensor_data.imu_1.acc.values[i] = filters.imu_1.acc.values[i].x();
+        // Gyro KF
+        filters.imu_1.gyro.values[i] << sensor_data.imu_1.gyro.values[i];
+        sensor_data.imu_1.gyro.values[i] = filters.imu_1.gyro.values[i].x();
+    }
+}
+
+void accept_command(Stream *istream) {
+    Stream &stream = *istream;  // Alias to istream
+
+    if (!stream.available()) return;
+    delayMicroseconds(20ul * 1000ul);
+
+    String rx_message = "";
+    rx_message.reserve(64);
+
+    while (stream.available()) {
+        rx_message += static_cast<char>(stream.read());
+    }
+
+    // Repeats for at least 5 times before continuing
+    if (rx_message.substring(0, 4) != "cmd ") return;
+
+    String command = rx_message.substring(4);
+    command.trim();
+
+    ++sensor_data.last_ack;
+
+    if (command == "ping" || command == "wake" || command == "on") {
+        // <--- Maybe a wakeup command --->
+    } else if (command == "arm") {
+        // <--- Arming the rocket --->
+        sensor_data.ps = luna::state_t::ARMED;
+    } else if (command == "prelaunch") {
+        // <--- Prelaunch operation --->
+        sensor_data.ps = luna::state_t::PAD_PREOP;
+    } else if (command == "recover") {
+        // <--- Rocket landing confirmed --->
+        sensor_data.ps = luna::state_t::RECOVERED_SAFE;
+    } else if (command == "sleep") {
+        // <--- Put the device into deep sleep mode (power saving) --->
+        LowPower.deepSleep();
+    } else if (command == "shutdown") {
+        // <--- Shutdown the device --->
+        LowPower.shutdown();
+    } else if (command == "reboot" || command == "restart") {
+        // <--- Reboot/reset the device --->
+        if (pvalid.sd) {
+            // close file
+        }
+        if (pvalid.flash) {
+            // close file
+        }
+        __NVIC_SystemReset();
+    } else if (command == "clear") {
+        // <--- Clear ack and nack flags --->
+        sensor_data.last_ack  = 0;
+        sensor_data.last_nack = 0;
+    } else {
+        // <--- Unknown command: send back nack --->
+        ++sensor_data.last_nack;
+        --sensor_data.last_ack;
+    }
+}
+
+void transmit_data(time_type *interval_ms) {
+    static time_type prev = *interval_ms;
+    static smart_delay sd(*interval_ms, millis);
+
+    if (prev != *interval_ms) {
+        sd.set_interval(*interval_ms);
+        prev = *interval_ms;
+    }
+
+    if (!sd) return;
+
+    csv_stream_crlf(UART_RFD900X)
+            << "<45>"
+            << sensor_data.timestamp
+            << sensor_data.tx_pc++
+            << luna::state_string(sensor_data.ps)
+            << "PYRO" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
+            << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
+            << "GPS" << sensor_data.gps_siv
+            << String(sensor_data.gps_lat, 6)
+            << String(sensor_data.gps_lon, 6)
+            << String(sensor_data.gps_alt, 4)
+            << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
+            << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
+            << "IMU1ACC" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
+            << "IMU1GYR" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
+            << "CPU_T" << sensor_data.cpu_temp
+            << sensor_data.last_ack;
+}
+
+void debug() {
+    // DEBUG
+}
+
+void save_data(time_type *interval_ms) {
+    static time_type prev = *interval_ms;
+    static smart_delay sd(*interval_ms, millis);
+
+    if (prev != *interval_ms) {
+        sd.set_interval(*interval_ms);
+        prev = *interval_ms;
+    }
+
+    if (!sd) return;
+
+    // todo: Save to storage
+}
+
+void fsm_eval() {
+    constexpr static time_type time_to_burnout = 10ul * 1000ul;  // 10 seconds overestimate
+    constexpr static time_type time_to_apogee  = 30ul * 1000ul;  // 30 seconds overestimate
+
+    static bool state_satisfaction             = false;
+
+    static time_type launched_time             = 0;
+
+    switch (sensor_data.ps) {
+        case luna::state_t::STARTUP: {
+            // Next: always transfer
+            sensor_data.ps = luna::state_t::IDLE_SAFE;
+            break;
+        }
+        case luna::state_t::IDLE_SAFE: {
+            //  <--- Next: wait for uplink --->
+            break;
+        }
+        case luna::state_t::ARMED: {
+            // <--- Next: wait for uplink --->
+            break;
+        }
+        case luna::state_t::PAD_PREOP: {
+            // Next: DETECT launch
+            if (!state_satisfaction) {
+            }
+            if (state_satisfaction) {
+                launched_time      = millis();
+                sensor_data.ps     = luna::state_t::POWERED;
+                state_satisfaction = false;
+                tx_interval        = luna::config::TX_ASCEND_INTERVAL;
+                log_interval       = luna::config::LOG_ASCEND_INTERVAL;
+            }
+            break;
+        }
+        case luna::state_t::POWERED: {
+            // Next: DETECT motor burnout
+            if (!state_satisfaction) {
+            }
+            if (state_satisfaction) {
+                sensor_data.ps     = luna::state_t::COASTING;
+                state_satisfaction = false;
+            }
+            break;
+        }
+        case luna::state_t::COASTING: {
+            // Next: DETECT apogee
+            if (!state_satisfaction) {
+            }
+            if (state_satisfaction) {
+                sensor_data.ps     = luna::state_t::DROGUE_DEPLOY;
+                state_satisfaction = false;
+            }
+            break;
+        }
+        case luna::state_t::DROGUE_DEPLOY: {
+            // Next: activate and always transfer
+            sensor_data.ps = luna::state_t::DROGUE_DESCEND;
+            break;
+        }
+        case luna::state_t::DROGUE_DESCEND: {
+            // Next: DETECT main deployment altitude
+            if (!state_satisfaction) {
+            }
+            if (state_satisfaction) {
+                sensor_data.ps     = luna::state_t::MAIN_DEPLOY;
+                state_satisfaction = false;
+                tx_interval        = luna::config::TX_DESCEND_INTERVAL;
+                log_interval       = luna::config::LOG_DESCEND_INTERVAL;
+            }
+            break;
+        }
+        case luna::state_t::MAIN_DEPLOY: {
+            // Next: activate and always transfer
+            sensor_data.ps = luna::state_t::MAIN_DESCEND;
+            break;
+        }
+        case luna::state_t::MAIN_DESCEND: {
+            // Next: DETECT landing
+            if (!state_satisfaction) {
+            }
+            if (state_satisfaction) {
+                sensor_data.ps     = luna::state_t::LANDED;
+                state_satisfaction = false;
+                tx_interval        = luna::config::TX_IDLE_INTERVAL;
+                log_interval       = luna::config::LOG_IDLE_INTERVAL;
+            }
+            break;
+        }
+        case luna::state_t::LANDED: {
+            // <--- Next: wait for uplink --->
+            break;
+        }
+        case luna::state_t::RECOVERED_SAFE: {
+            // Sink state (requires reboot)
+            break;
+        }
+        default:
+            __builtin_unreachable();
+    }
+}
+
+void buzzer_control(smart_delay::on_off *intervals_ms) {
+    // todo
+    static time_type prev_on  = intervals_ms->t_on;
+    static time_type prev_off = intervals_ms->t_off;
+    static smart_delay sd_on(intervals_ms->t_on, millis);
+    static smart_delay sd_off(intervals_ms->t_off, millis);
+    static bool is_on = false;
+
+    if (prev_on != intervals_ms->t_on || prev_off != intervals_ms->t_off) {
+        sd_on.set_interval(intervals_ms->t_on);
+        sd_off.set_interval(intervals_ms->t_off);
+        prev_on  = intervals_ms->t_on;
+        prev_off = intervals_ms->t_off;
+    }
+
+    if (is_on) {
+        if (sd_on) {
+            // do something
+            is_on = false;
+        }
+    } else {
+        if (sd_off) {
+            // do something
+            is_on = true;
+        }
+    }
+}
+
+void future_accept_command(Stream *istream) {
+    Stream &stream = *istream;  // Alias to istream
+    uint32_t index = 0;
+
+    if (stream.available()) {
+        delay(20);
+    }
+    while (stream.available()) {
+        rx_buffer[index++] = UART_RFD900X.read();
+    }
+
+    luna::header_t &rx_header = *reinterpret_cast<luna::header_t *>(rx_buffer);
+    const luna::message_t rx_message(rx_header, rx_buffer + sizeof(luna::header_t));
+    const luna::command_t rx_command = rx_message.get<luna::command_t>();
+}
+
+void future_manual_trigger() {
     static smart_delay sd(5000ul, millis);
     static smart_delay sd2(1000ul, millis);
 
-    sensor_data.cont_a = gpio_read.sample<32>(luna::pins::pyro::SENS_A);
-    sensor_data.cont_b = gpio_read.sample<32>(luna::pins::pyro::SENS_B);
-    sensor_data.cont_c = gpio_read.sample<32>(luna::pins::pyro::SENS_C);
-
-    static int prev    = gpio_read.sample<32>(luna::pins::gpio::USER_1);
-    int meas           = gpio_read.sample<32>(luna::pins::gpio::USER_1);
+    static int prev = gpio_read.sample<32>(luna::pins::gpio::USER_1);
+    const int meas  = gpio_read.sample<32>(luna::pins::gpio::USER_1);
 
     // todo: Very smart delay application (On phase, Off phase)
 
@@ -342,95 +661,4 @@ void read_continuity() {
     }
 
     prev = meas;
-}
-
-void read_core_temp() {
-    sensor_data.cpu_temp = internal::read_cpu_temp(internal::read_vref());
-}
-
-void read_gnss() {
-    if (gnss_m9v.getPVT(luna::config::UBLOX_CUSTOM_MAX_WAIT)) {
-        sensor_data.timestamp = gnss_m9v.getUnixEpoch(luna::config::UBLOX_CUSTOM_MAX_WAIT);
-        sensor_data.gps_siv   = gnss_m9v.getSIV(luna::config::UBLOX_CUSTOM_MAX_WAIT);
-        sensor_data.gps_lat   = static_cast<double>(gnss_m9v.getLatitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
-        sensor_data.gps_lon   = static_cast<double>(gnss_m9v.getLongitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
-        sensor_data.gps_alt   = static_cast<float>(gnss_m9v.getAltitudeMSL(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
-        // gnss_m9v.getMagAcc()
-    }
-}
-
-void read_ms(ms_ref_t *ms) {
-    ms->ms.read();
-    ms->temp = ms->ms.getTemperature();
-    ms->pres = ms->ms.getPressure();
-    ms->alt  = pressure_altitude(ms->pres);
-}
-
-void read_icm20948() {
-}
-
-void read_icm42688() {
-    imu_icm42688.readAccGyro(reinterpret_cast<double *>(&sensor_data.imu_1));
-}
-
-void accept_command(Stream *istream) {
-    Stream &stream = *istream;  // Alias to istream
-    uint32_t index = 0;
-
-    if (stream.available()) {
-        delay(20);
-    }
-    while (stream.available()) {
-        rx_buffer[index++] = UART_RFD900X.read();
-    }
-
-    luna::header_t &rx_header = *reinterpret_cast<luna::header_t *>(rx_buffer);
-    const luna::message_t rx_message(rx_header, rx_buffer + sizeof(luna::header_t));
-    const luna::command_t rx_command = rx_message.get<luna::command_t>();
-}
-
-void transmit_data() {
-}
-
-void debug() {
-    gnss_m9v.getTimeValid();
-
-    csv_stream_crlf(USB_DEBUG)
-            << gpio_read(luna::pins::gpio::BUZZER)
-            << gpio_read(luna::pins::pyro::SIG_C)
-            << millis()
-            << "CPU_TEMP"
-            << sensor_data.cpu_temp
-            << "CONTINUITY"
-            << sensor_data.cont_a
-            << sensor_data.cont_b
-            << sensor_data.cont_c
-            << "IMU_1(ICM4X)"
-            << sensor_data.imu_1.acc.x
-            << sensor_data.imu_1.acc.y
-            << sensor_data.imu_1.acc.z
-            << sensor_data.imu_1.gyro.x
-            << sensor_data.imu_1.gyro.y
-            << sensor_data.imu_1.gyro.z
-            << "MS1"
-            << sensor_data.ms1_temp
-            << sensor_data.ms1_pres
-            << sensor_data.ms1_alt
-            << "MS2"
-            << sensor_data.ms2_temp
-            << sensor_data.ms2_pres
-            << sensor_data.ms2_alt
-            << "GNSS(m9V)"
-            << sensor_data.gps_siv
-            << sensor_data.timestamp
-            << String(sensor_data.gps_lat, 6)
-            << String(sensor_data.gps_lon, 6)
-            << String(sensor_data.gps_alt, 4)
-            << -1;
-}
-
-void save_data() {
-}
-
-void fsm_map() {
 }
