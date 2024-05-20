@@ -4,10 +4,17 @@
 #include <cstdint>
 
 namespace luna::config {
-    constexpr uint32_t TIME_TO_APOGEE_MIN     = 25 * 1000ul;
-    constexpr uint32_t TIME_TO_APOGEE_MAX     = 30 * 1000ul;
-    constexpr uint32_t TIME_TO_BURNOUT_MIN    = 10 * 1000ul;
-    constexpr uint32_t TIME_TO_BURNOUT_MAX    = 10 * 1000ul;
+    constexpr uint32_t TIME_TO_APOGEE_MIN  = 25 * 1000ul;
+    constexpr uint32_t TIME_TO_APOGEE_MAX  = 30 * 1000ul;
+    constexpr uint32_t TIME_TO_BURNOUT_MIN = 10 * 1000ul;
+    constexpr uint32_t TIME_TO_BURNOUT_MAX = 10 * 1000ul;
+
+    namespace alg {
+        constexpr uint32_t LAUNCH_TON  = 100ul;  // 100 ms
+        constexpr uint32_t LAUNCH_TOFF = 50ul;   // 50 ms
+        constexpr double LAUNCH_ACC    = 50.0;
+        // constexpr uin
+    }  // namespace alg
 
     constexpr unsigned long RFD900X_BAUD      = 460800;
     constexpr unsigned long UART_BAUD         = 115200;

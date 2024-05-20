@@ -15,6 +15,8 @@ template<typename SdClass = SdExFat, typename FileClass = ExFile>
 class FsUtil {
 protected:
     SdClass &m_sd;
+    ExFile m_file     = {};
+    String m_filename = {};
 
     struct ls_helper {
         SdClass &m_sd;
@@ -45,7 +47,9 @@ protected:
     };
 
 public:
-    explicit FsUtil(SdClass &sd) : m_sd(sd) {}
+    explicit FsUtil(SdClass &sd) : m_sd(sd) {
+        m_filename.reserve(64);
+    }
 
     [[nodiscard]] ls_helper ls(const String &path) const {
         return ls_helper(m_sd, path.c_str());
@@ -55,7 +59,21 @@ public:
         return ls_helper(m_sd, path);
     }
 
-    void rm(const char *path) const {
+    constexpr FileClass &get_file() {
+        return m_file;
+    }
+
+    template<FsMode Mode>
+    void open_one() {
+        m_file = open<Mode>(m_filename);
+    }
+
+    void close_one() {
+        m_file.close();
+    }
+
+    void flush_one() {
+        m_file.flush();
     }
 
     template<FsMode Mode>
@@ -77,6 +95,14 @@ public:
         }
 
         return file;
+    }
+
+    void find_file_name(const char *prefix, const char *extension = "csv") {
+        uint32_t file_idx = 1;
+        do {
+            m_filename = "";
+            m_filename << prefix << file_idx++ << "." << extension;
+        } while (m_sd.exists(m_filename.c_str()));
     }
 };
 

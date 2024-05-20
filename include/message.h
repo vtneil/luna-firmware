@@ -132,11 +132,14 @@ namespace luna {
         float ms1_temp{};
         float ms1_alt{};
 
-        // MS2 (128 bit)
+        // MS2 (96 bit)
         float ms2_pres{};
         float ms2_temp{};
         float ms2_alt{};
-        float aux{};
+
+        // MS Fusion (64 bit)
+        float ms_alt_gnd{};
+        float ms_alt_fusion{};
 
         // IMU ICM42688 (384 bit)
         struct {

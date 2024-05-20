@@ -25,6 +25,8 @@ namespace luna {
                 return "IDLE_SAFE";
             case state_t::ARMED:
                 return "ARMED";
+            case state_t::PAD_PREOP:
+                return "PAD_PREOP";
             case state_t::POWERED:
                 return "POWERED";
             case state_t::COASTING:
