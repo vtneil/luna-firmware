@@ -227,6 +227,8 @@ namespace luna {
 
         template<detail::payload_type PayloadType>
         bool verify() const {
+            // todo: Implement
+            return false;
         }
 
         Stream &operator>>(Stream &stream) const {

@@ -5,16 +5,64 @@
 #include "Arduino_Extended.h"
 
 namespace algorithm {
-    namespace detail {
-
-    }
-
     namespace traits {
         template<typename F>
         concept GettableX = requires(F f) {
             { f.x() } -> std::same_as<double>;
         };
+
+        template<typename T>
+        concept lt_comparable = requires(T t1, T t2) {
+            { t1 < t2 } -> std::same_as<bool>;
+        };
+
+        template<typename T>
+        concept gt_comparable = requires(T t1, T t2) {
+            { t1 < t2 } -> std::same_as<bool>;
+        };
+
+        template<typename T>
+        concept eq_comparable = requires(T t1, T t2) {
+            { t1 == t2 } -> std::same_as<bool>;
+        };
+
+        template<typename T>
+        concept comparable = eq_comparable<T> || gt_comparable<T> || lt_comparable<T>;
     }  // namespace traits
+
+    template<traits::gt_comparable T>
+    constexpr T max(T t1, T t2) {
+        return t1 > t2 ? t1 : t2;
+    }
+
+    template<traits::gt_comparable T>
+    constexpr T min(T t1, T t2) {
+        return t1 < t2 ? t1 : t2;
+    }
+
+    namespace detail {
+        constexpr double sum_square_helper() {
+            return 0;
+        }
+
+        template<typename T, typename... Ts>
+        constexpr double sum_square_helper(const T &v, const Ts &...vs) {
+            return v * v + sum_square_helper(vs...);
+        }
+    }  // namespace detail
+
+    template<typename... Ts>
+    constexpr double root_sum_square(const Ts &...vs) {
+        return std::sqrt(detail::sum_square_helper(vs...));
+    }
+
+    constexpr bool is_zero(const float value, const float epsilon = 1e-4f) {
+        return value < epsilon;
+    }
+
+    constexpr bool is_zero(const double value, const double epsilon = 1e-4) {
+        return value < epsilon;
+    }
 
     class ExponentialMovingAverage {
     private:
@@ -110,51 +158,118 @@ namespace algorithm {
         static constexpr double initial_noise = 0.1;
     };
 
-    class Kinematics {
+    template<size_t N>
+    class Derivative {
     private:
         double m_dt;
-        double m_x      = {};
-        double m_v      = {};
-        double m_a      = {};
-
-        double m_prev_x = {};
-        double m_prev_v = {};
-
-        uint8_t m_cnt   = {};
+        double m_values[2][N + 1] = {};  // Ping-pong buffer (double buffering)
+        uint8_t m_line            = 0;
+        uint8_t m_cnt             = 0;
 
     public:
-        explicit constexpr Kinematics(const double dt) : m_dt{dt} {}
+        explicit constexpr Derivative(const double dt) : m_dt{dt} {
+        }
 
-        Kinematics &operator<<(const double z) {
-            switch (m_cnt) {
-                case 0: {
-                    m_x   = z;
-                    m_cnt = 1;
-                    break;
-                }
-                case 1: {
-                    m_prev_x = m_x;
-                    m_x      = z;
-                    m_v      = (m_x - m_prev_x) / m_dt;
-                    m_cnt    = 2;
-                    break;
-                }
-                default: {
-                    m_prev_v = m_v;
-                    m_prev_x = m_x;
-                    m_x      = z;
-                    m_v      = (m_x - m_prev_x) / m_dt;
-                    m_a      = (m_v - m_prev_v) / m_dt;
-                    break;
+        Derivative &operator<<(const double z) {
+            if (m_cnt == 0) {
+                m_values[m_line][0] = z;
+                m_cnt               = 1;
+            } else {
+                m_line              = 1 - m_line;  // Swap buffer line
+                m_values[m_line][0] = z;
+                for (size_t i = 1; i <= N; ++i) {
+                    m_values[m_line][i] = (m_values[m_line][i - 1] - m_values[1 - m_line][i - 1]) / m_dt;
                 }
             }
 
             return *this;
         }
 
-        [[nodiscard]] constexpr double x() const { return m_x; }
-        [[nodiscard]] constexpr double v() const { return m_v; }
-        [[nodiscard]] constexpr double z() const { return m_a; }
+        [[nodiscard]] constexpr double operator[](size_t i) const {
+            return this->order(i);
+        }
+
+        [[nodiscard]] constexpr double order(size_t i) const {
+            return i <= N ? m_values[m_line][i] : 0.0;
+        }
+
+        [[nodiscard]] constexpr size_t size() const {
+            return N + 1;
+        }
+    };
+
+    template<size_t N>
+    class Integral {
+    private:
+        double m_values[2][N + 1] = {};  // Ping-pong buffer (double buffering)
+        double m_dt;
+        uint8_t m_line;
+        uint8_t m_cnt;
+
+    public:
+        explicit constexpr Integral(const double dt) : m_dt{dt}, m_line{0}, m_cnt{0} {
+        }
+
+        Integral &operator<<(const double z) {
+            if (m_cnt == 0) {
+                m_values[m_line][0] = z;
+                m_cnt               = 1;
+            } else {
+                m_line              = 1 - m_line;  // Swap buffer line
+                m_values[m_line][0] = z;
+                for (size_t i = 1; i <= N; ++i) {
+                    m_values[m_line][i] = m_values[1 - m_line][i] + m_values[1 - m_line][i - 1] * m_dt;
+                }
+            }
+
+            return *this;
+        }
+
+        [[nodiscard]] constexpr double operator[](const size_t i) const {
+            return this->order(i);
+        }
+
+        [[nodiscard]] constexpr double order(const size_t i) const {
+            return i <= N ? m_values[m_line][i] : 0.0;
+        }
+
+        [[nodiscard]] constexpr size_t size() const {
+            return N + 1;
+        }
+    };
+
+    template<size_t TrueRatio, size_t FalseRatio, bool Strict = false>
+    constexpr bool vote_sample(const size_t true_count, const size_t false_count) {
+        if constexpr (Strict) {
+            return true_count * FalseRatio > false_count * TrueRatio;
+        } else {
+            return true_count * FalseRatio >= false_count * TrueRatio;
+        }
+    }
+
+    class Sampler {
+    private:
+        size_t true_count  = {};
+        size_t false_count = {};
+
+    public:
+        constexpr void add(const bool pred) {
+            if (pred) {
+                ++true_count;
+            } else {
+                ++false_count;
+            }
+        }
+
+        constexpr void reset() {
+            true_count  = 0;
+            false_count = 0;
+        }
+
+        template<size_t TrueRatio, size_t FalseRatio, bool Strict = false>
+        [[nodiscard]] constexpr bool vote() const {
+            return vote_sample<TrueRatio, FalseRatio, Strict>(true_count, false_count);
+        }
     };
 }  // namespace algorithm
 

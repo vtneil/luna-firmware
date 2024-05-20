@@ -35,9 +35,10 @@
 
 // Type aliases
 
-using time_type   = uint32_t;
-using smart_delay = vt::smart_delay<time_type>;
-using task_type   = vt::task_t<vt::smart_delay, time_type>;
+using time_type    = uint32_t;
+using smart_delay  = vt::smart_delay<time_type>;
+using on_off_timer = vt::on_off_timer<time_type>;
+using task_type    = vt::task_t<vt::smart_delay, time_type>;
 
 template<size_t N>
 using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
@@ -405,9 +406,14 @@ void accept_command(Stream *istream) {
     } else if (command == "arm") {
         // <--- Arming the rocket --->
         sensor_data.ps = luna::state_t::ARMED;
+    } else if (command == "disarm") {
+        sensor_data.ps = luna::state_t::IDLE_SAFE;
     } else if (command == "prelaunch") {
         // <--- Prelaunch operation --->
-        sensor_data.ps = luna::state_t::PAD_PREOP;
+        // Must be armed first!
+        if (sensor_data.ps == luna::state_t::ARMED) {
+            sensor_data.ps = luna::state_t::PAD_PREOP;
+        }
     } else if (command == "recover") {
         // <--- Rocket landing confirmed --->
         sensor_data.ps = luna::state_t::RECOVERED_SAFE;
@@ -446,25 +452,25 @@ void transmit_data(time_type *interval_ms) {
         prev = *interval_ms;
     }
 
-    if (!sd) return;
-
-    csv_stream_crlf(UART_RFD900X)
-            << "<45>"
-            << sensor_data.timestamp
-            << sensor_data.tx_pc++
-            << luna::state_string(sensor_data.ps)
-            << "PYRO" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
-            << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
-            << "GPS" << sensor_data.gps_siv
-            << String(sensor_data.gps_lat, 6)
-            << String(sensor_data.gps_lon, 6)
-            << String(sensor_data.gps_alt, 4)
-            << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-            << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
-            << "IMU1ACC" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-            << "IMU1GYR" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
-            << "CPU_T" << sensor_data.cpu_temp
-            << sensor_data.last_ack;
+    sd([&]() -> void {
+        csv_stream_crlf(UART_RFD900X)
+                << "<45>"
+                << sensor_data.timestamp
+                << sensor_data.tx_pc++
+                << luna::state_string(sensor_data.ps)
+                << "PYRO" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
+                << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
+                << "GPS" << sensor_data.gps_siv
+                << String(sensor_data.gps_lat, 6)
+                << String(sensor_data.gps_lon, 6)
+                << String(sensor_data.gps_alt, 4)
+                << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
+                << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
+                << "IMU1ACC" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
+                << "IMU1GYR" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
+                << "CPU_T" << sensor_data.cpu_temp
+                << sensor_data.last_ack;
+    });
 }
 
 void debug() {
@@ -480,18 +486,18 @@ void save_data(time_type *interval_ms) {
         prev = *interval_ms;
     }
 
-    if (!sd) return;
-
-    // todo: Save to storage
+    sd([&]() -> void {
+        // todo: Save to storage
+    });
 }
 
 void fsm_eval() {
-    constexpr static time_type time_to_burnout = 10ul * 1000ul;  // 10 seconds overestimate
-    constexpr static time_type time_to_apogee  = 30ul * 1000ul;  // 30 seconds overestimate
+    static bool state_satisfaction     = false;
+    static time_type launched_time     = 0;
 
-    static bool state_satisfaction             = false;
-
-    static time_type launched_time             = 0;
+    const float altitude_fusion        = (sensor_data.ms1_alt + sensor_data.ms2_alt) * 0.5;
+    const double acc_mag               = algorithm::root_sum_square(sensor_data.imu_1.acc.x, sensor_data.imu_1.acc.y, sensor_data.imu_1.acc.z);
+    const double acc_no_gravity        = acc_mag - 9.81;
 
     switch (sensor_data.ps) {
         case luna::state_t::STARTUP: {
@@ -508,7 +514,7 @@ void fsm_eval() {
             break;
         }
         case luna::state_t::PAD_PREOP: {
-            // Next: DETECT launch
+            // !!!!! Next: DETECT launch !!!!!
             if (!state_satisfaction) {
             }
             if (state_satisfaction) {
@@ -521,7 +527,7 @@ void fsm_eval() {
             break;
         }
         case luna::state_t::POWERED: {
-            // Next: DETECT motor burnout
+            // !!!!! Next: DETECT motor burnout !!!!!
             if (!state_satisfaction) {
             }
             if (state_satisfaction) {
@@ -531,7 +537,7 @@ void fsm_eval() {
             break;
         }
         case luna::state_t::COASTING: {
-            // Next: DETECT apogee
+            // !!!!! Next: DETECT apogee !!!!!
             if (!state_satisfaction) {
             }
             if (state_satisfaction) {
@@ -546,7 +552,7 @@ void fsm_eval() {
             break;
         }
         case luna::state_t::DROGUE_DESCEND: {
-            // Next: DETECT main deployment altitude
+            // !!!!! Next: DETECT main deployment altitude !!!!!
             if (!state_satisfaction) {
             }
             if (state_satisfaction) {
@@ -563,7 +569,7 @@ void fsm_eval() {
             break;
         }
         case luna::state_t::MAIN_DESCEND: {
-            // Next: DETECT landing
+            // !!!!! Next: DETECT landing !!!!!
             if (!state_satisfaction) {
             }
             if (state_satisfaction) {
@@ -580,6 +586,7 @@ void fsm_eval() {
         }
         case luna::state_t::RECOVERED_SAFE: {
             // Sink state (requires reboot)
+            do_nothing();
             break;
         }
         default:
@@ -587,32 +594,28 @@ void fsm_eval() {
     }
 }
 
-void buzzer_control(smart_delay::on_off *intervals_ms) {
-    // todo
+void buzzer_control(on_off_timer::interval_params *intervals_ms) {
+    // Interval change keeper
     static time_type prev_on  = intervals_ms->t_on;
     static time_type prev_off = intervals_ms->t_off;
-    static smart_delay sd_on(intervals_ms->t_on, millis);
-    static smart_delay sd_off(intervals_ms->t_off, millis);
-    static bool is_on = false;
+
+    // On-off timer
+    static on_off_timer timer(intervals_ms->t_on, intervals_ms->t_off, millis);
 
     if (prev_on != intervals_ms->t_on || prev_off != intervals_ms->t_off) {
-        sd_on.set_interval(intervals_ms->t_on);
-        sd_off.set_interval(intervals_ms->t_off);
+        timer.set_interval_on(intervals_ms->t_on);
+        timer.set_interval_off(intervals_ms->t_off);
         prev_on  = intervals_ms->t_on;
         prev_off = intervals_ms->t_off;
     }
 
-    if (is_on) {
-        if (sd_on) {
-            // do something
-            is_on = false;
-        }
-    } else {
-        if (sd_off) {
-            // do something
-            is_on = true;
-        }
-    }
+    timer.on_rising([&]() -> void {
+        gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+    });
+
+    timer.on_falling([&]() -> void {
+        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+    });
 }
 
 void future_accept_command(Stream *istream) {
@@ -632,7 +635,7 @@ void future_accept_command(Stream *istream) {
 }
 
 void future_manual_trigger() {
-    static smart_delay sd(5000ul, millis);
+    static smart_delay sd1(5000ul, millis);
     static smart_delay sd2(1000ul, millis);
 
     static int prev = gpio_read.sample<32>(luna::pins::gpio::USER_1);
@@ -641,22 +644,22 @@ void future_manual_trigger() {
     // todo: Very smart delay application (On phase, Off phase)
 
     if (meas && prev) {
-        if (sd) {
+        sd1([&]() -> void {
             gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A);
             gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
             delay(1000);
-        } else {
-            if (sd2) {
+        }).otherwise([&]() -> void {
+            sd2([&]() -> void {
                 gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
                 delay(50);
-            } else {
+            }).otherwise([&]() -> void {
                 gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-            }
-        }
+            });
+        });
     } else {
         gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A);
         gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-        sd.reset();
+        sd1.reset();
         sd2.reset();
     }
 

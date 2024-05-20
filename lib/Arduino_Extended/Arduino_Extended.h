@@ -308,4 +308,6 @@ constexpr uint8_t *byte_cast(void *ptr) {
     return static_cast<uint8_t *>(ptr);
 }
 
+inline __attribute__((__always_inline__)) void do_nothing() {}
+
 #endif  //ARDUINO_EXTENDED_H
