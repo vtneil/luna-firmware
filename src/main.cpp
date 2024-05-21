@@ -97,6 +97,8 @@ SPIClass SPI_4(to_digital(luna::pins::spi::ch4::MOSI),
                to_digital(luna::pins::spi::ch4::MISO),
                to_digital(luna::pins::spi::ch4::SCK));
 
+on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL, luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
+
 // Hardware references
 
 // USBSerial &UART_USB          = Serial;
@@ -161,6 +163,7 @@ ms_ref_t ms2_ref = {ms2, sensor_data.ms2_temp, sensor_data.ms2_pres, sensor_data
 // Software control
 dispatcher_type<32> dispatcher;
 vt::fsm<luna::state_t> fsm(luna::state_t::STARTUP);
+bool launch_override = false;
 size_t fsm_samples;
 
 // HardwareTimer timer_led(TIM1);
@@ -188,6 +191,8 @@ extern void debug();
 extern void save_data(time_type *interval_ms);
 
 extern void fsm_eval();
+
+extern void buzzer_control(on_off_timer::interval_params *intervals_ms);
 
 void setup() {
     // GPIO and Digital Pins
@@ -253,7 +258,7 @@ void setup() {
     if (pvalid.ms1 && pvalid.ms2) {
         read_ms(&ms1_ref);
         read_ms(&ms2_ref);
-        sensor_data.ms_alt_gnd = (sensor_data.ms1_alt + sensor_data.ms2_alt) * 0.5;
+        sensor_data.ms_alt_gnd = sensor_data.ms2_alt;
     }
 
     // IMU
@@ -288,13 +293,14 @@ void setup() {
 
     // Task initialization
     dispatcher << task_type(read_continuity, 500ul, micros, 0)
+               << task_type(buzzer_control, &buzzer_intervals, 0ul, millis, 0)
 
-               << task_type(fsm_eval, 2ul * 1000ul, micros, 1)
+               << task_type(fsm_eval, 25ul * 1000ul, micros, 1)
 
                << (task_type(read_icm42688, 50ul * 1000ul, micros, 1), pvalid.imu_icm42688)
                << (task_type(read_icm20948, 5ul * 1000ul, micros, 1), pvalid.imu_icm20948)
-               << (task_type(read_ms, &ms1_ref, 50ul, millis, 2), pvalid.ms1)
-               << (task_type(read_ms, &ms2_ref, 50ul, millis, 2), pvalid.ms2)
+               << (task_type(read_ms, &ms1_ref, 10ul, millis, 2), pvalid.ms1)
+               << (task_type(read_ms, &ms2_ref, 10ul, millis, 2), pvalid.ms2)
                << (task_type(read_gnss, 100ul, millis, 2), pvalid.gnss_m9v)
 
                << task_type(accept_command, &UART_RFD900X, 100ul, millis, 252)
@@ -416,6 +422,9 @@ void accept_command(HardwareSerial *istream) {
             log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
         }
 
+    } else if (command == "launch-override") {
+        launch_override = true;
+
     } else if (command == "recover") {
         // <--- Rocket landing confirmed --->
         sensor_data.ps = luna::state_t::RECOVERED_SAFE;
@@ -424,7 +433,7 @@ void accept_command(HardwareSerial *istream) {
         // <--- Zero barometric altitude --->
         read_ms(&ms1_ref);
         read_ms(&ms2_ref);
-        sensor_data.ms_alt_gnd = (sensor_data.ms1_alt + sensor_data.ms2_alt) * 0.5;
+        sensor_data.ms_alt_gnd = sensor_data.ms2_alt;
 
     } else if (command == "sleep") {
         // <--- Put the device into deep sleep mode (power saving) --->
@@ -478,7 +487,10 @@ void transmit_data(time_type *interval_ms) {
                 << sensor_data.timestamp
                 << sensor_data.tx_pc++
                 << luna::state_string(sensor_data.ps)
-                << "PYRO" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
+                << "PYRO"
+                << luna::pyro_state_string(sensor_data.pyro_a)
+                << luna::pyro_state_string(sensor_data.pyro_b)
+                << luna::pyro_state_string(sensor_data.pyro_c)
                 << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
                 << "GPS" << sensor_data.gps_siv
                 << String(sensor_data.gps_lat, 6)
@@ -535,30 +547,17 @@ void save_data(time_type *interval_ms) {
 void fsm_eval() {
     static bool state_satisfaction = false;
     static time_type launched_time = 0;
+    static algorithm::Derivative<2> z(0.025);
 
-    sensor_data.ms_alt_fusion      = (sensor_data.ms1_alt + sensor_data.ms2_alt) * 0.5;
-    const float altitude_agl       = sensor_data.ms_alt_fusion - sensor_data.ms_alt_gnd;
-    const double acc_mag           = algorithm::root_sum_square(sensor_data.imu_1.acc.x, sensor_data.imu_1.acc.y, sensor_data.imu_1.acc.z);
-    const double acc_no_gravity    = acc_mag - 9.81;
-
-    // UART_RFD900X << acc_no_gravity << stream::crlf;
+    sensor_data.ms_alt_fusion   = sensor_data.ms2_alt;
+    const float altitude_agl    = sensor_data.ms2_alt - sensor_data.ms_alt_gnd;
+    const double acc_mag        = algorithm::root_sum_square(sensor_data.imu_1.acc.x, sensor_data.imu_1.acc.y, sensor_data.imu_1.acc.z);
+    const double acc_no_gravity = acc_mag - 9.81;
 
     static algorithm::Sampler sampler_positive;
     static algorithm::Sampler sampler_negative;
 
-    {
-        static algorithm::Sampler sampler;
-        static smart_delay sd_sample(1000ul * 1000ul, micros);
-
-        sd_sample([&] {
-            sampler.reset();
-            static_cast<void>(sampler.vote<3, 1>());
-            fsm_samples = 0;
-        }).otherwise([&] {
-            sampler.add(true);
-            ++fsm_samples;
-        });
-    }
+    z << altitude_agl;
 
     switch (sensor_data.ps) {
         case luna::state_t::STARTUP: {
@@ -568,14 +567,18 @@ void fsm_eval() {
         }
         case luna::state_t::IDLE_SAFE: {
             //  <--- Next: wait for uplink --->
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL);
             break;
         }
         case luna::state_t::ARMED: {
             // <--- Next: wait for uplink --->
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_ARMED_INTERVAL);
             break;
         }
         case luna::state_t::PAD_PREOP: {
             // !!!!! Next: DETECT launch !!!!!
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_PAD_PREOP_INTERVAL);
+
             static on_off_timer tim(luna::config::alg::LAUNCH_TON, luna::config::alg::LAUNCH_TOFF, millis);
 
             if (!state_satisfaction) {
@@ -595,7 +598,7 @@ void fsm_eval() {
                     }
                 });
             }
-            if (state_satisfaction) {
+            if (state_satisfaction || launch_override) {
                 launched_time      = millis();
                 sensor_data.ps     = luna::state_t::POWERED;
                 state_satisfaction = false;
@@ -608,7 +611,11 @@ void fsm_eval() {
         }
         case luna::state_t::POWERED: {
             // !!!!! Next: DETECT motor burnout !!!!!
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_ASCEND_INTERVAL);
+
             if (!state_satisfaction) {
+                // todo: Unfinished state condition
+                state_satisfaction |= millis() - launched_time >= luna::config::TIME_TO_BURNOUT_MIN;
             }
             if (state_satisfaction) {
                 sensor_data.ps     = luna::state_t::COASTING;
@@ -618,22 +625,70 @@ void fsm_eval() {
         }
         case luna::state_t::COASTING: {
             // !!!!! Next: DETECT apogee !!!!!
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_ASCEND_INTERVAL);
+
+            static on_off_timer tim(200, luna::config::alg::LAUNCH_TOFF, millis);
+
             if (!state_satisfaction) {
+                sampler_positive.add(z[1] >= luna::config::alg::APOGEE_VEL);
+                sampler_negative.add(z[1] < luna::config::alg::APOGEE_VEL);
+
+                tim.on_falling([&] {
+                    if (sampler_positive.vote<2, 1>()) {
+                        state_satisfaction = true;
+                    }
+                });
+
+                tim.on_rising([&] {
+                    if (sampler_negative.vote<2, 1>()) {
+                        sampler_positive.reset();
+                        sampler_negative.reset();
+                    }
+                });
+
+                state_satisfaction |= millis() - launched_time >= luna::config::TIME_TO_APOGEE_MAX;
             }
             if (state_satisfaction) {
                 sensor_data.ps     = luna::state_t::DROGUE_DEPLOY;
                 state_satisfaction = false;
+                sampler_positive.reset();
+                sampler_negative.reset();
             }
             break;
         }
         case luna::state_t::DROGUE_DEPLOY: {
             // Next: activate and always transfer
-            sensor_data.ps = luna::state_t::DROGUE_DESCEND;
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_DESCEND_INTERVAL);
+
+            sensor_data.ps         = luna::state_t::DROGUE_DESCEND;
+
+            // todo: Implement real firing
+            sensor_data.pyro_a = luna::pyro_state_t::FIRED;
+
             break;
         }
         case luna::state_t::DROGUE_DESCEND: {
             // !!!!! Next: DETECT main deployment altitude !!!!!
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_DESCEND_INTERVAL);
+
+            static on_off_timer tim(500, 100, millis);
+
             if (!state_satisfaction) {
+                sampler_positive.add(z[0] <= luna::config::alg::MAIN_ALTITUDE);
+                sampler_negative.add(z[0] > luna::config::alg::MAIN_ALTITUDE);
+
+                tim.on_falling([&] {
+                    if (sampler_positive.vote<2, 1>()) {
+                        state_satisfaction = true;
+                    }
+                });
+
+                tim.on_rising([&] {
+                    if (sampler_negative.vote<2, 1>()) {
+                        sampler_positive.reset();
+                        sampler_negative.reset();
+                    }
+                });
             }
             if (state_satisfaction) {
                 sensor_data.ps     = luna::state_t::MAIN_DEPLOY;
@@ -645,12 +700,37 @@ void fsm_eval() {
         }
         case luna::state_t::MAIN_DEPLOY: {
             // Next: activate and always transfer
-            sensor_data.ps = luna::state_t::MAIN_DESCEND;
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_DESCEND_INTERVAL);
+
+            sensor_data.ps         = luna::state_t::MAIN_DESCEND;
+
+            // todo: Implement real firing
+            sensor_data.pyro_b = luna::pyro_state_t::FIRED;
             break;
         }
         case luna::state_t::MAIN_DESCEND: {
             // !!!!! Next: DETECT landing !!!!!
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_DESCEND_INTERVAL);
+
+            static on_off_timer tim(1000, 100, millis);
+
             if (!state_satisfaction) {
+                const bool stable = algorithm::is_zero(z[1], 0.1);
+                sampler_positive.add(stable);
+                sampler_negative.add(not stable);
+
+                tim.on_falling([&] {
+                    if (sampler_positive.vote<2, 1>()) {
+                        state_satisfaction = true;
+                    }
+                });
+
+                tim.on_rising([&] {
+                    if (sampler_negative.vote<2, 1>()) {
+                        sampler_positive.reset();
+                        sampler_negative.reset();
+                    }
+                });
             }
             if (state_satisfaction) {
                 sensor_data.ps     = luna::state_t::LANDED;
@@ -662,10 +742,14 @@ void fsm_eval() {
         }
         case luna::state_t::LANDED: {
             // <--- Next: wait for uplink --->
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_DESCEND_INTERVAL);
+
             break;
         }
         case luna::state_t::RECOVERED_SAFE: {
             // Sink state (requires reboot)
+            buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL);
+
             do_nothing();
             break;
         }

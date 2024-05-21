@@ -57,11 +57,11 @@ namespace algorithm {
     }
 
     constexpr bool is_zero(const float value, const float epsilon = 1e-4f) {
-        return value < epsilon;
+        return value > 0.0f ? value < epsilon : value > -epsilon;
     }
 
     constexpr bool is_zero(const double value, const double epsilon = 1e-4) {
-        return value < epsilon;
+        return value > 0.0 ? value < epsilon : value > -epsilon;
     }
 
     class ExponentialMovingAverage {

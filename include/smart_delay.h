@@ -87,6 +87,10 @@ namespace vt {
                 return false;
             }
 
+            if (m_target_interval == 0) {
+                return true;
+            }
+
             // Adaptive interval adjustment
             TimeType curr_time = m_func();
             if (curr_time - m_prev_time >= m_true_interval) {

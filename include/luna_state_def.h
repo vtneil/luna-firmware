@@ -53,6 +53,19 @@ namespace luna {
         ARMED,
         FIRED
     };
+
+    inline const char *pyro_state_string(const pyro_state_t state) {
+        switch (state) {
+            case pyro_state_t::DISARMED:
+                return "DISARMED";
+            case pyro_state_t::ARMED:
+                return "ARMED";
+            case pyro_state_t::FIRED:
+                return "FIRED";
+            default:
+                __builtin_unreachable();
+        }
+    }
 }  // namespace luna
 
 #endif  //LUNA_STATE_DEF_H
