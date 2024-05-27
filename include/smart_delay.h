@@ -157,6 +157,7 @@ namespace vt {
                 sd_off([&]() -> void {
                     proc();
                     is_on = true;
+                    sd_on.reset();
                 });
             }
         }
@@ -167,6 +168,7 @@ namespace vt {
                 sd_on([&]() -> void {
                     proc();
                     is_on = false;
+                    sd_off.reset();
                 });
             }
         }

@@ -35,9 +35,9 @@ namespace luna::config {
     constexpr uint32_t LOG_ASCEND_INTERVAL       = 50ul;    // 20 Hz
     constexpr uint32_t LOG_DESCEND_INTERVAL      = 100ul;   // 10 Hz
 
-    constexpr uint32_t BUZZER_ON_INTERVAL        = 50ul;    // 50 ms
+    constexpr uint32_t BUZZER_ON_INTERVAL        = 25ul;    // 50 ms
     constexpr uint32_t BUZZER_IDLE_INTERVAL      = 1000ul;  // 1 Hz
-    constexpr uint32_t BUZZER_ARMED_INTERVAL     = 250ul;   // 4 Hz
+    constexpr uint32_t BUZZER_ARMED_INTERVAL     = 500ul;   // 2 Hz
     constexpr uint32_t BUZZER_PAD_PREOP_INTERVAL = 100ul;   // 10 Hz
     constexpr uint32_t BUZZER_ASCEND_INTERVAL    = 5000ul;  // 0.2 Hz
     constexpr uint32_t BUZZER_DESCEND_INTERVAL   = 1000ul;  // 1 Hz

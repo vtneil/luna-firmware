@@ -598,6 +598,9 @@ void fsm_eval() {
                     }
                 });
             }
+
+            state_satisfaction = false;
+
             if (state_satisfaction || launch_override) {
                 launched_time      = millis();
                 sensor_data.ps     = luna::state_t::POWERED;
