@@ -80,7 +80,7 @@ namespace algorithm {
                 m_ema  = v;
                 m_init = 1;
             } else {
-                m_ema = m_alpha * v + (1.0 - m_alpha) * m_ema;
+                m_ema = (1.0 - m_alpha) * m_ema + m_alpha * v;
             }
             return *this;
         }

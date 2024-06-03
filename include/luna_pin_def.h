@@ -8,12 +8,12 @@ namespace luna::pins {
         constexpr PinName PIN_24V = PB_12;
     }
     namespace gpio {
-        constexpr PinName LED_R  = PE_12;  // Onboard RGB LED R
-        constexpr PinName LED_G  = PE_13;  // Onboard RGB LED G
+        constexpr PinName LED_R  = PE_13;  // Onboard RGB LED R
+        constexpr PinName LED_G  = PE_12;  // Onboard RGB LED G
         constexpr PinName LED_B  = PE_14;  // Onboard RGB LED B
-        constexpr PinName BUZZER = PD_9;   // Onboard buzzer
-        constexpr PinName USER_1 = PF_9;   // Onboard push button 1
-        constexpr PinName USER_2 = PF_8;   // Onboard push button 2
+        constexpr PinName BUZZER = PD_9;  // Onboard buzzer
+        constexpr PinName USER_1 = PF_9;  // Onboard push button 1
+        constexpr PinName USER_2 = PF_8;  // Onboard push button 2
     }  // namespace gpio
 
     namespace pyro {

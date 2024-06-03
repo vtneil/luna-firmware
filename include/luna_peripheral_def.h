@@ -26,7 +26,7 @@ namespace luna::config {
     constexpr uint32_t TX_IDLE_INTERVAL          = 1000ul;  // 1 Hz
     constexpr uint32_t TX_ARMED_INTERVAL         = 500ul;   // 2 Hz
     constexpr uint32_t TX_PAD_PREOP_INTERVAL     = 200ul;   // 5 Hz
-    constexpr uint32_t TX_ASCEND_INTERVAL        = 100ul;   // 10 Hz
+    constexpr uint32_t TX_ASCEND_INTERVAL        = 200ul;   // 5 Hz
     constexpr uint32_t TX_DESCEND_INTERVAL       = 200ul;   // 5 Hz
 
     constexpr uint32_t LOG_IDLE_INTERVAL         = 1000ul;  // 1 Hz

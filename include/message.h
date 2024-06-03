@@ -103,8 +103,9 @@ namespace luna {
     };
 
     struct sensor_data_t {
-        // Message Time (64 bit)
+        // Message Time (96 bit)
         uint32_t timestamp{};
+        uint32_t timestamp_us{};
         uint32_t tx_pc{};
 
         // State and pyro state (32 bit)

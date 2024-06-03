@@ -14,8 +14,8 @@ enum class FsMode : uint8_t {
 template<typename SdClass = SdExFat, typename FileClass = ExFile>
 class FsUtil {
 protected:
-    SdClass &m_sd;
-    ExFile m_file     = {};
+    SdClass m_sd      = {};
+    FileClass m_file  = {};
     String m_filename = {};
 
     struct ls_helper {
@@ -47,19 +47,23 @@ protected:
     };
 
 public:
-    explicit FsUtil(SdClass &sd) : m_sd(sd) {
+    FsUtil() {
         m_filename.reserve(64);
     }
 
-    [[nodiscard]] ls_helper ls(const String &path) const {
+    [[nodiscard]] ls_helper ls(const String &path) {
         return ls_helper(m_sd, path.c_str());
     }
 
-    [[nodiscard]] ls_helper ls(const char *path = "/") const {
+    [[nodiscard]] ls_helper ls(const char *path = "/") {
         return ls_helper(m_sd, path);
     }
 
-    constexpr FileClass &get_file() {
+    constexpr SdClass &sd() {
+        return m_sd;
+    }
+
+    constexpr FileClass &file() {
         return m_file;
     }
 
@@ -77,12 +81,12 @@ public:
     }
 
     template<FsMode Mode>
-    [[nodiscard]] FileClass open(const String &filename) const {
+    [[nodiscard]] FileClass open(const String &filename) {
         return open<Mode>(filename.c_str());
     }
 
     template<FsMode Mode>
-    [[nodiscard]] FileClass open(const char *filename) const {
+    [[nodiscard]] FileClass open(const char *filename) {
         FileClass file;
 
         if constexpr (Mode == FsMode::READ) {

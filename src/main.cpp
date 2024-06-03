@@ -5,6 +5,9 @@
  * @brief LUNA Firmware
  */
 
+#include "vt_linalg"
+#include "vt_kalman"
+
 #include <Arduino.h>
 #include "Arduino_Extended.h"
 #include <STM32LowPower.h>
@@ -43,6 +46,9 @@ using task_type    = vt::task_t<vt::smart_delay, time_type>;
 
 template<size_t N>
 using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
+
+using sd_t            = SdExFat;
+using file_t          = ExFile;
 
 // Type defs
 
@@ -126,17 +132,8 @@ software_filters filters;
 
 // Communication data
 
-luna::header_t tx_header = {
-        {'<', '4', '5', '>'},
-        THIS_DEVICE_ID,
-        luna::payload_type::DATA,
-        luna::transmit_direction::DOWNLINK,
-        0,
-        0, // Data size: must modify
-        0  // Data checksum: must modify
-};
-luna::data_t tx_data;
-luna::message_t tx_message(tx_header, &tx_data);
+String tx_data;
+String sd_data;
 
 time_type tx_interval  = luna::config::TX_IDLE_INTERVAL;
 time_type log_interval = luna::config::LOG_IDLE_INTERVAL;
@@ -145,11 +142,8 @@ time_type log_interval = luna::config::LOG_IDLE_INTERVAL;
 
 peripherals_t pvalid;
 
-SdExFat flash;
-SdExFat sd;
-
-FsUtil<SdExFat, ExFile> flash_util(flash);
-FsUtil<SdExFat, ExFile> sd_util(sd);
+FsUtil<sd_t, file_t> flash_util;
+FsUtil<sd_t, file_t> sd_util;
 
 SFE_UBLOX_GNSS gnss_m9v;
 ICM_20948_SPI imu_icm20948;
@@ -168,7 +162,7 @@ size_t fsm_samples;
 
 // HardwareTimer timer_led(TIM1);
 
-extern void init_storage(FsUtil<SdExFat, ExFile> sd_util_instance);
+extern void init_storage(FsUtil<sd_t, file_t> &sd_util_instance);
 
 extern void read_continuity();
 
@@ -184,15 +178,17 @@ extern void read_icm42688();
 
 extern void accept_command(HardwareSerial *istream);
 
-extern void transmit_data(time_type *interval_ms);
+extern void construct_data();
 
-extern void debug();
+extern void transmit_data(time_type *interval_ms);
 
 extern void save_data(time_type *interval_ms);
 
 extern void fsm_eval();
 
 extern void buzzer_control(on_off_timer::interval_params *intervals_ms);
+
+extern void led_control(on_off_timer::interval_params *intervals_ms);
 
 void setup() {
     // GPIO and Digital Pins
@@ -202,10 +198,22 @@ void setup() {
              << luna::pins::pyro::SIG_A
              << luna::pins::pyro::SIG_B
              << luna::pins::pyro::SIG_C
-             << luna::pins::gpio::BUZZER
              << luna::pins::power::PIN_24V;
 
-    dout_high << luna::pins::spi::cs::flash
+    // SCREW SWITCH DEBOUNCE WAIT
+
+    gpio_write << io_function::pull_high(luna::pins::gpio::LED_R);
+    gpio_write << io_function::pull_low(luna::pins::gpio::LED_G);
+    gpio_write << io_function::pull_high(luna::pins::gpio::LED_B);
+
+    delay(500);
+
+    gpio_write << io_function::pull_high(luna::pins::gpio::LED_R);
+    gpio_write << io_function::pull_high(luna::pins::gpio::LED_G);
+    gpio_write << io_function::pull_high(luna::pins::gpio::LED_B);
+
+    dout_high << luna::pins::gpio::BUZZER
+              << luna::pins::spi::cs::flash
               << luna::pins::spi::cs::sd
               << luna::pins::spi::cs::ms2
               << luna::pins::spi::cs::ms1
@@ -237,16 +245,16 @@ void setup() {
     // SPI 1, 2, 3: 64 MHz; SPI 4,5: 120 MHz
 
     // Storage Initialization
-    pvalid.flash = flash.begin(SdSpiConfig(luna::pins::spi::cs::flash,
-                                           SHARED_SPI,
-                                           SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                           &SPI_3));
+    pvalid.flash = flash_util.sd().begin(SdSpiConfig(luna::pins::spi::cs::flash,
+                                                     SHARED_SPI,
+                                                     SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                                                     &SPI_3));
     if (pvalid.flash) { init_storage(flash_util); }
 
-    pvalid.sd = sd.begin(SdSpiConfig(luna::pins::spi::cs::sd,
-                                     SHARED_SPI,
-                                     SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                     &SPI_3));
+    pvalid.sd = sd_util.sd().begin(SdSpiConfig(luna::pins::spi::cs::sd,
+                                               SHARED_SPI,
+                                               SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                                               &SPI_3));
     if (pvalid.sd) { init_storage(sd_util); }
 
     // Peripherals Initialization
@@ -256,23 +264,33 @@ void setup() {
     pvalid.ms2 = ms2.begin();
 
     if (pvalid.ms1 && pvalid.ms2) {
-        read_ms(&ms1_ref);
-        read_ms(&ms2_ref);
+        for (size_t i = 0; i < 5; ++i) {
+            read_ms(&ms1_ref);
+            read_ms(&ms2_ref);
+            delay(100);
+        }
         sensor_data.ms_alt_gnd = sensor_data.ms2_alt;
     }
 
     // IMU
     pvalid.imu_icm42688 = imu_icm42688.begin() == 1;
     if (pvalid.imu_icm42688) {
-        imu_icm42688.setAccelRange(ICM42688::ACCEL_RANGE_16G);
-        imu_icm42688.setGyroRange(ICM42688::GYRO_RANGE_2000DPS);
-        imu_icm42688.setFilters(true, true);
+        // DO NOT USE THIS: UNRELIABLE
+        // imu_icm42688.setAccelRange(ICM42688::ACCEL_RANGE_16G);
+        // imu_icm42688.setGyroRange(ICM42688::GYRO_RANGE_2000DPS);
+        // imu_icm42688.setFilters(true, true);
     }
 
     pvalid.imu_icm20948 = imu_icm20948.begin(to_digital(luna::pins::spi::cs::icm20948), SPI_4) == ICM_20948_Stat_Ok;
     if (pvalid.imu_icm20948) {
-    } else {
-        USB_DEBUG << imu_icm20948.statusString() << stream::crlf;
+        imu_icm20948.swReset();
+        delay(250);
+        imu_icm20948.sleep(false);
+        imu_icm20948.lowPower(false);
+        imu_icm20948.setSampleMode(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, ICM_20948_Sample_Mode_Continuous);
+        imu_icm20948.setFullScale(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, {.a = gpm16, .g = dps2000});
+        imu_icm20948.setDLPFcfg(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, {.a = acc_d246bw_n265bw, .g = gyr_d196bw6_n229bw8});
+        imu_icm20948.enableDLPF(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, true);
     }
 
     // GPS
@@ -294,21 +312,22 @@ void setup() {
     // Task initialization
     dispatcher << task_type(read_continuity, 500ul, micros, 0)
                << task_type(buzzer_control, &buzzer_intervals, 0ul, millis, 0)
+               << task_type(led_control, &buzzer_intervals, 0ul, millis, 0)
 
                << task_type(fsm_eval, 25ul * 1000ul, micros, 1)
 
                << (task_type(read_icm42688, 50ul * 1000ul, micros, 1), pvalid.imu_icm42688)
-               << (task_type(read_icm20948, 5ul * 1000ul, micros, 1), pvalid.imu_icm20948)
+               << (task_type(read_icm20948, 50ul * 1000ul, micros, 1), pvalid.imu_icm20948)
                << (task_type(read_ms, &ms1_ref, 10ul, millis, 2), pvalid.ms1)
                << (task_type(read_ms, &ms2_ref, 10ul, millis, 2), pvalid.ms2)
                << (task_type(read_gnss, 100ul, millis, 2), pvalid.gnss_m9v)
 
                << task_type(accept_command, &UART_RFD900X, 100ul, millis, 252)
 
-               // << (task_type(save_data, &log_interval, 0ul, millis, 253), pvalid.sd)  // Adaptive
-               << task_type(transmit_data, &tx_interval, 0ul, millis, 253)  // Adaptive
+               << task_type(construct_data, 50ul, millis, 253)
+               << (task_type(save_data, &log_interval, 0ul, millis, 254), pvalid.sd)  // Adaptive
+               << task_type(transmit_data, &tx_interval, 0ul, millis, 254)            // Adaptive
 
-               << task_type(debug, 100ul, millis, 254)
                << task_type(read_core_temp, 500ul, millis, 255);
 
     // Low power mode
@@ -319,11 +338,15 @@ void setup() {
     });
 
     // Peripheral validation
+    tx_data.reserve(512);
+    sd_data.reserve(768);
     pvalid >> USB_DEBUG << stream::crlf;
     USB_DEBUG << "Init successful!" << stream::crlf;
 
-    // States
-    sensor_data.ps = luna::state_t::IDLE_SAFE;
+    // TEST OVERRIDE (REMOVE BEFORE FLIGHT)
+    // sensor_data.ps = luna::state_t::PAD_PREOP;
+    // tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
+    // log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
 
     // Reset timers before starting
     dispatcher.reset();
@@ -331,7 +354,7 @@ void setup() {
 
 void loop() { dispatcher(); }
 
-void init_storage(FsUtil<SdExFat, ExFile> sd_util_instance) {
+void init_storage(FsUtil<sd_t, file_t> &sd_util_instance) {
     sd_util_instance.find_file_name(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
     sd_util_instance.open_one<FsMode::WRITE>();
 }
@@ -359,16 +382,34 @@ void read_gnss() {
 void read_ms(ms_ref_t *ms) {
     ms->ms.read();
     ms->temp = ms->ms.getTemperature();
-    ms->kf << ms->ms.getPressure();
-    ms->pres = ms->kf.x();
+    ms->pres = ms->ms.getPressure();
+    // todo: FIX THIS SHIT AND ALL KALMAN FILTERS
+    // ms->kf << ms->ms.getPressure();
+    // ms->pres = ms->kf.x();
     ms->alt  = pressure_altitude(ms->pres);
 }
 
 void read_icm20948() {
+    if (imu_icm20948.dataReady()) {
+        imu_icm20948.getAGMT();
+        sensor_data.imu_2.acc.x  = -imu_icm20948.accY() * 0.001 * 9.81;
+        sensor_data.imu_2.acc.y  = -imu_icm20948.accX() * 0.001 * 9.81;
+        sensor_data.imu_2.acc.z  = imu_icm20948.accZ() * 0.001 * 9.81;
+        sensor_data.imu_2.gyro.x = imu_icm20948.gyrY();
+        sensor_data.imu_2.gyro.y = imu_icm20948.gyrX();
+        sensor_data.imu_2.gyro.z = imu_icm20948.gyrZ();
+    }
 }
 
 void read_icm42688() {
-    imu_icm42688.readAccGyro(reinterpret_cast<double *>(&sensor_data.imu_1));
+    imu_icm42688.readSensor();
+    sensor_data.imu_1.acc.x  = -imu_icm42688.getAccelX_mss();
+    sensor_data.imu_1.acc.y  = -imu_icm42688.getAccelY_mss();
+    sensor_data.imu_1.acc.z  = -imu_icm42688.getAccelZ_mss();
+    sensor_data.imu_1.gyro.x = imu_icm42688.getGyroX_dps();
+    sensor_data.imu_1.gyro.y = imu_icm42688.getGyroY_dps();
+    sensor_data.imu_1.gyro.z = imu_icm42688.getGyroZ_dps();
+
     for (size_t i = 0; i < 3; ++i) {
         // Acc KF
         filters.imu_1.acc.values[i] << sensor_data.imu_1.acc.values[i];
@@ -472,6 +513,42 @@ void accept_command(HardwareSerial *istream) {
     }
 }
 
+void construct_data() {
+    // todo: Revert back to each tx and sd data
+    tx_data = "";
+    csv_stream_crlf(tx_data)
+            << "<45>"
+            << sensor_data.timestamp
+            << sensor_data.tx_pc++
+            << luna::state_string(sensor_data.ps)
+
+            << sensor_data.gps_siv
+            << String(sensor_data.gps_lat, 6)
+            << String(sensor_data.gps_lon, 6)
+            << String(sensor_data.ms_alt_fusion - sensor_data.ms_alt_gnd, 4)
+
+            << "PYRO"
+            << luna::pyro_state_string(sensor_data.pyro_a)
+            << luna::pyro_state_string(sensor_data.pyro_b)
+            << luna::pyro_state_string(sensor_data.pyro_c)
+            << sensor_data.cont_a
+            << sensor_data.cont_b
+            << sensor_data.cont_c
+
+            << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
+            << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
+
+            << "A1" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
+            << "G1" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
+
+            << "A2" << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
+            << "G2" << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
+
+            << "CPU_T" << sensor_data.cpu_temp
+            << sensor_data.last_ack
+            << sensor_data.last_nack;
+}
+
 void transmit_data(time_type *interval_ms) {
     static time_type prev = *interval_ms;
     static smart_delay sd(*interval_ms, millis);
@@ -482,38 +559,14 @@ void transmit_data(time_type *interval_ms) {
     }
 
     sd([&]() -> void {
-        csv_stream_crlf(UART_RFD900X)
-                << "<45>"
-                << sensor_data.timestamp
-                << sensor_data.tx_pc++
-                << luna::state_string(sensor_data.ps)
-                << "PYRO"
-                << luna::pyro_state_string(sensor_data.pyro_a)
-                << luna::pyro_state_string(sensor_data.pyro_b)
-                << luna::pyro_state_string(sensor_data.pyro_c)
-                << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
-                << "GPS" << sensor_data.gps_siv
-                << String(sensor_data.gps_lat, 6)
-                << String(sensor_data.gps_lon, 6)
-                << String(sensor_data.ms_alt_fusion - sensor_data.ms_alt_gnd, 4)
-                << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-                << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
-                << "IMU1ACC" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-                << "IMU1GYR" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
-                << "CPU_T" << sensor_data.cpu_temp
-                << sensor_data.last_ack
-                << sensor_data.last_nack
-                << fsm_samples;
+        UART_RFD900X << tx_data;
     });
-}
-
-void debug() {
-    // DEBUG
 }
 
 void save_data(time_type *interval_ms) {
     static time_type prev = *interval_ms;
     static smart_delay sd(*interval_ms, millis);
+    static smart_delay sd_save(1000, millis);
 
     if (prev != *interval_ms) {
         sd.set_interval(*interval_ms);
@@ -521,26 +574,12 @@ void save_data(time_type *interval_ms) {
     }
 
     sd([&]() -> void {
-        String s;
-        csv_stream_crlf(s)
-                << "<45>"
-                << sensor_data.timestamp
-                << sensor_data.tx_pc
-                << luna::state_string(sensor_data.ps)
-                << "PYRO" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
-                << "CONT" << sensor_data.cont_a << sensor_data.cont_b << sensor_data.cont_c
-                << "GPS" << sensor_data.gps_siv
-                << String(sensor_data.gps_lat, 6)
-                << String(sensor_data.gps_lon, 6)
-                << String(sensor_data.ms_alt_fusion - sensor_data.ms_alt_gnd, 4)
-                << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-                << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
-                << "IMU1ACC" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-                << "IMU1GYR" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
-                << "CPU_T" << sensor_data.cpu_temp
-                << sensor_data.last_ack
-                << sensor_data.last_nack
-                << fsm_samples;
+        // todo: Change later
+        sd_util.file() << tx_data;
+    });
+
+    sd_save([&]() -> void {
+        sd_util.flush_one();
     });
 }
 
@@ -782,6 +821,58 @@ void buzzer_control(on_off_timer::interval_params *intervals_ms) {
 
     timer.on_falling([&]() -> void {
         gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+    });
+}
+
+void led_control(on_off_timer::interval_params *intervals_ms) {
+    // Interval change keeper
+    static time_type prev_on  = intervals_ms->t_on;
+    static time_type prev_off = intervals_ms->t_off;
+    static struct {
+        int value = 0;
+    } onboard_led;
+
+    // On-off timer
+    static on_off_timer timer(intervals_ms->t_on, intervals_ms->t_off, millis);
+
+    if (prev_on != intervals_ms->t_on || prev_off != intervals_ms->t_off) {
+        timer.set_interval_on(intervals_ms->t_on);
+        timer.set_interval_off(intervals_ms->t_off);
+        prev_on  = intervals_ms->t_on;
+        prev_off = intervals_ms->t_off;
+    }
+
+    timer.on_rising([&]() -> void {
+        switch (sensor_data.ps) {
+            case luna::state_t::IDLE_SAFE:
+                onboard_led.value = 0b010;
+                break;
+
+            case luna::state_t::ARMED:
+                if (onboard_led.value == 0b100)
+                    onboard_led.value = 0b010;
+                else
+                    onboard_led.value = 0b100;
+                break;
+
+            case luna::state_t::PAD_PREOP:
+                onboard_led.value = 0b100;
+                break;
+
+            default:
+                onboard_led.value = 0b111;
+                break;
+        }
+
+        gpio_write << io_function::set(luna::pins::gpio::LED_R, BITS_AT(onboard_led.value, 2));
+        gpio_write << io_function::set(luna::pins::gpio::LED_G, BITS_AT(onboard_led.value, 1));
+        gpio_write << io_function::set(luna::pins::gpio::LED_B, BITS_AT(onboard_led.value, 0));
+    });
+
+    timer.on_falling([&]() -> void {
+        gpio_write << io_function::pull_low(luna::pins::gpio::LED_R);
+        gpio_write << io_function::pull_low(luna::pins::gpio::LED_G);
+        gpio_write << io_function::pull_low(luna::pins::gpio::LED_B);
     });
 }
 

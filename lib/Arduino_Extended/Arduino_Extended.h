@@ -6,6 +6,8 @@
 #include <Wire.h>
 #include <stm32h7xx_ll_adc.h>
 
+#define BITS_AT(val, pos) ((val >> pos) & 1)
+
 namespace traits {
     template<typename S>
     concept has_ostream = requires(S s, const char *str) {
@@ -65,7 +67,8 @@ namespace detail {
 
     template<traits::has_ostream OStream,
              size_t ReserveSize = 0,
-             bool NewLine       = false>
+             bool NewLine       = false,
+             bool AutoFlush     = true>
     class csv_stream {
     private:
         OStream *m_stream = {};
@@ -100,7 +103,7 @@ namespace detail {
             // Flush to stream
             *m_stream << m_string;
 
-            if constexpr (flush_ostream<OStream>::value) {
+            if constexpr (AutoFlush && flush_ostream<OStream>::value) {
                 m_stream->flush();
             }
         }
@@ -114,14 +117,14 @@ namespace detail {
  * @param stream Ouptut stream OStream object
  * @return Csv stream object
  */
-template<traits::has_ostream OStream, size_t ReserveSize = 0, bool NewLine = false>
-detail::csv_stream<OStream, ReserveSize, NewLine> csv_stream(OStream &stream) {
-    return detail::csv_stream<OStream, ReserveSize, NewLine>(stream);
+template<traits::has_ostream OStream, size_t ReserveSize = 0, bool NewLine = false, bool AutoFlush = true>
+detail::csv_stream<OStream, ReserveSize, NewLine, AutoFlush> csv_stream(OStream &stream) {
+    return detail::csv_stream<OStream, ReserveSize, NewLine, AutoFlush>(stream);
 }
 
-template<traits::has_ostream OStream, size_t ReserveSize = 0>
-detail::csv_stream<OStream, ReserveSize, true> csv_stream_crlf(OStream &stream) {
-    return csv_stream<OStream, ReserveSize, true>(stream);
+template<traits::has_ostream OStream, size_t ReserveSize = 0, bool AutoFlush = true>
+detail::csv_stream<OStream, ReserveSize, true, AutoFlush> csv_stream_crlf(OStream &stream) {
+    return csv_stream<OStream, ReserveSize, true, AutoFlush>(stream);
 }
 
 // IO Pin as stream
