@@ -5,9 +5,6 @@
  * @brief LUNA Firmware
  */
 
-#include "vt_linalg"
-#include "vt_kalman"
-
 #include <Arduino.h>
 #include "Arduino_Extended.h"
 #include <STM32LowPower.h>
@@ -15,18 +12,19 @@
 
 #include <Wire.h>
 #include <SPI.h>
-#include <SoftwareSerial.h>
 
 #include <SdFat.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
 #include <ICM_20948.h>
 #include <ICM42688.h>
 #include <MS5611_SPI.h>
+#include <INA236.h>
 
 #include "luna_pin_def.h"
 #include "luna_state_def.h"
 #include "luna_peripheral_def.h"
 #include "avionics_algorithm.h"
+#include "luna_filter.h"
 #include "smart_delay.h"
 #include "tasks.h"
 #include "message.h"
@@ -36,6 +34,8 @@
 #define THIS_DEVICE_ID      (0)
 #define THIS_FILE_PREFIX    "LUNA_LOGGER_0_"
 #define THIS_FILE_EXTENSION "CSV"
+
+// #define HW_FORMAT_CARD
 
 // Type aliases
 
@@ -47,25 +47,36 @@ using task_type    = vt::task_t<vt::smart_delay, time_type>;
 template<size_t N>
 using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
 
-using sd_t            = SdExFat;
-using file_t          = ExFile;
+using sd_sd_t         = SdExFat;
+using sd_file_t       = ExFile;
+using flash_sd_t      = SdFat32;
+using flash_file_t    = File32;
 
 // Type defs
 
 struct peripherals_t {
-    uint8_t gnss_m9v;
-    uint8_t imu_icm20948;
-    uint8_t imu_icm42688;
-    uint8_t ms1;
-    uint8_t ms2;
-    uint8_t flash;
-    uint8_t sd;
+    union {
+        struct {
+            uint8_t ina236;
+            uint8_t gnss_m9v;
+            uint8_t imu_icm42688;
+            uint8_t imu_icm20948;
+
+            uint8_t ms1;
+            uint8_t ms2;
+            uint8_t flash;
+            uint8_t sd;
+        };
+
+        uint8_t arr[8];
+    };
 
     template<traits::has_ostream OStream>
     OStream &operator>>(OStream &ostream) {
+        ostream << "INA236: " << ina236 << stream::crlf;
         ostream << "GNSS M9V: " << gnss_m9v << stream::crlf;
-        ostream << "IMU ICM20948: " << imu_icm20948 << stream::crlf;
         ostream << "IMU ICM42688: " << imu_icm42688 << stream::crlf;
+        ostream << "IMU ICM20948: " << imu_icm20948 << stream::crlf;
         ostream << "BARO MS1: " << ms1 << stream::crlf;
         ostream << "BARO MS2: " << ms2 << stream::crlf;
         ostream << "STOR FLASH: " << flash << stream::crlf;
@@ -103,7 +114,17 @@ SPIClass SPI_4(to_digital(luna::pins::spi::ch4::MOSI),
                to_digital(luna::pins::spi::ch4::MISO),
                to_digital(luna::pins::spi::ch4::SCK));
 
-on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL, luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
+SdSpiConfig flash_config(luna::pins::spi::cs::flash,
+                         SHARED_SPI,
+                         SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                         &SPI_3);
+SdSpiConfig sd_config(luna::pins::spi::cs::sd,
+                      SHARED_SPI,
+                      SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                      &SPI_3);
+
+on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL,
+                                               luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
 
 // Hardware references
 
@@ -126,9 +147,7 @@ struct software_filters {
 
     algorithm::KalmanFilter_1D ms1_pres;
     algorithm::KalmanFilter_1D ms2_pres;
-};
-
-software_filters filters;
+} filters;
 
 // Communication data
 
@@ -142,9 +161,10 @@ time_type log_interval = luna::config::LOG_IDLE_INTERVAL;
 
 peripherals_t pvalid;
 
-FsUtil<sd_t, file_t> flash_util;
-FsUtil<sd_t, file_t> sd_util;
+FsUtil<flash_sd_t, flash_file_t> flash_util;
+FsUtil<sd_sd_t, sd_file_t> sd_util;
 
+INA236 ina236(luna::config::INA236_ADDRESS, &Wire1);
 SFE_UBLOX_GNSS gnss_m9v;
 ICM_20948_SPI imu_icm20948;
 ICM42688 imu_icm42688(SPI_1, to_digital(luna::pins::spi::cs::icm42688));
@@ -162,11 +182,12 @@ size_t fsm_samples;
 
 // HardwareTimer timer_led(TIM1);
 
-extern void init_storage(FsUtil<sd_t, file_t> &sd_util_instance);
+template<typename SdType, typename FileType>
+extern void init_storage(FsUtil<SdType, FileType> &sd_util_instance);
 
 extern void read_continuity();
 
-extern void read_core_temp();
+extern void read_internal();
 
 extern void read_gnss();
 
@@ -212,13 +233,7 @@ void setup() {
     gpio_write << io_function::pull_high(luna::pins::gpio::LED_G);
     gpio_write << io_function::pull_high(luna::pins::gpio::LED_B);
 
-    dout_high << luna::pins::gpio::BUZZER
-              << luna::pins::spi::cs::flash
-              << luna::pins::spi::cs::sd
-              << luna::pins::spi::cs::ms2
-              << luna::pins::spi::cs::ms1
-              << luna::pins::spi::cs::icm20948
-              << luna::pins::spi::cs::icm42688;
+    dout_low << luna::pins::gpio::BUZZER;
 
     din_config << luna::pins::pyro::SENS_A
                << luna::pins::pyro::SENS_B
@@ -231,12 +246,63 @@ void setup() {
     // UART_USB.begin(UART_BAUD);
     UART_LORA.begin(luna::config::UART_BAUD);
     UART_RFD900X.begin(luna::config::RFD900X_BAUD);
-
     USB_DEBUG << "UART Hello!" << stream::crlf;
+
+
+    // SPI Mode
+    SPI_3.setDataMode(SPI_MODE0);
+
+    SPI_1.begin();
+    SPI_3.begin();
+    SPI_4.begin();
+
+
+#if defined(HW_FORMAT_CARD)
+    auto s1 = sd_util.fmt_new_card(sd_config);
+    UART_RFD900X << s1 << "\n";
+
+    if (s1)
+        while (true)
+            ;
+    auto s2 = sd_util.fmt_erase_card();
+    UART_RFD900X << s2 << "\n";
+    if (s2)
+        while (true)
+            ;
+
+    auto s3 = sd_util.fmt_format_card(UART_RFD900X);
+    UART_RFD900X << s3 << "\n";
+    if (s3)
+        while (true)
+            ;
+
+    s1 = flash_util.fmt_new_card(flash_config);
+    UART_RFD900X << s1 << "\n";
+
+    if (s1)
+        while (true)
+            ;
+    s2 = flash_util.fmt_erase_card();
+    UART_RFD900X << s2 << "\n";
+    if (s2)
+        while (true)
+            ;
+
+    s3 = flash_util.fmt_format_card(UART_RFD900X);
+    UART_RFD900X << s3 << "\n";
+    if (s3)
+        while (true)
+            ;
+
+    while (true)
+        ;
+
+#endif
 
     // I2C (Wire) Interfaces
     Wire1.setClock(400000);
     Wire1.begin();
+
 
     // I2C Debug
     i2c_detect(USB_DEBUG, Wire1, 0, 127);
@@ -245,31 +311,42 @@ void setup() {
     // SPI 1, 2, 3: 64 MHz; SPI 4,5: 120 MHz
 
     // Storage Initialization
-    pvalid.flash = flash_util.sd().begin(SdSpiConfig(luna::pins::spi::cs::flash,
-                                                     SHARED_SPI,
-                                                     SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                                     &SPI_3));
+    pvalid.flash = flash_util.sd().begin(flash_config);
     if (pvalid.flash) { init_storage(flash_util); }
 
-    pvalid.sd = sd_util.sd().begin(SdSpiConfig(luna::pins::spi::cs::sd,
-                                               SHARED_SPI,
-                                               SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                               &SPI_3));
+
+    pvalid.sd = sd_util.sd().begin(sd_config);
     if (pvalid.sd) { init_storage(sd_util); }
 
+
     // Peripherals Initialization
+
+    // Battery voltage monitor
+    pvalid.ina236 = ina236.begin();
+    if (pvalid.ina236) {
+        ina236.setADCRange(luna::config::INA236ADCRange::RANGE_80MV);
+    }
+
 
     // Barometer and temperature
     pvalid.ms1 = ms1.begin();
     pvalid.ms2 = ms2.begin();
 
-    if (pvalid.ms1 && pvalid.ms2) {
-        for (size_t i = 0; i < 5; ++i) {
+    if (pvalid.ms1) {
+        ms1.reset();
+        ms1.setOversampling(OSR_STANDARD);
+        for (size_t i = 0; i < 20; ++i) {
             read_ms(&ms1_ref);
-            read_ms(&ms2_ref);
-            delay(100);
         }
-        sensor_data.ms_alt_gnd = sensor_data.ms2_alt;
+        sensor_data.ms_alt_gnd = sensor_data.ms1_alt;
+    }
+
+    if (pvalid.ms2) {
+        ms2.reset();
+        ms2.setOversampling(OSR_STANDARD);
+        for (size_t i = 0; i < 20; ++i) {
+            read_ms(&ms2_ref);
+        }
     }
 
     // IMU
@@ -280,6 +357,7 @@ void setup() {
         // imu_icm42688.setGyroRange(ICM42688::GYRO_RANGE_2000DPS);
         // imu_icm42688.setFilters(true, true);
     }
+
 
     pvalid.imu_icm20948 = imu_icm20948.begin(to_digital(luna::pins::spi::cs::icm20948), SPI_4) == ICM_20948_Stat_Ok;
     if (pvalid.imu_icm20948) {
@@ -292,6 +370,7 @@ void setup() {
         imu_icm20948.setDLPFcfg(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, {.a = acc_d246bw_n265bw, .g = gyr_d196bw6_n229bw8});
         imu_icm20948.enableDLPF(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, true);
     }
+
 
     // GPS
     pvalid.gnss_m9v = gnss_m9v.begin(Wire1);
@@ -309,26 +388,75 @@ void setup() {
         // gnss_m9v.saveConfiguration(luna::config::UBLOX_CUSTOM_MAX_WAIT);
     }
 
+    auto pyro_cutoff = [] {
+        static smart_delay sd_a(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
+        static smart_delay sd_b(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
+        static smart_delay sd_c(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
+        static bool flag_a = false;
+        static bool flag_b = false;
+        static bool flag_c = false;
+
+        if (sensor_data.pyro_a == luna::pyro_state_t::FIRING) {
+            if (!flag_a) {
+                sd_a.reset();
+                flag_a = true;
+            } else {
+                sd_a([] {
+                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A);
+                    sensor_data.pyro_a = luna::pyro_state_t::FIRED;
+                    flag_a             = false;
+                });
+            }
+        }
+
+        if (sensor_data.pyro_b == luna::pyro_state_t::FIRING) {
+            if (!flag_b) {
+                sd_b.reset();
+                flag_b = true;
+            } else {
+                sd_b([] {
+                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_B);
+                    sensor_data.pyro_b = luna::pyro_state_t::FIRED;
+                    flag_b             = false;
+                });
+            }
+        }
+
+        if (sensor_data.pyro_c == luna::pyro_state_t::FIRING) {
+            if (!flag_c) {
+                sd_c.reset();
+                flag_c = true;
+            } else {
+                sd_c([] {
+                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_C);
+                    sensor_data.pyro_c = luna::pyro_state_t::FIRED;
+                    flag_c             = false;
+                });
+            }
+        }
+    };
+
     // Task initialization
     dispatcher << task_type(read_continuity, 500ul, micros, 0)
-               << task_type(buzzer_control, &buzzer_intervals, 0ul, millis, 0)
-               << task_type(led_control, &buzzer_intervals, 0ul, millis, 0)
+               << task_type(buzzer_control, &buzzer_intervals, 0)  // Adaptive
+               << task_type(led_control, &buzzer_intervals, 0)     // Adaptive
+               << task_type(pyro_cutoff, 100, millis, 0)
 
-               << task_type(fsm_eval, 25ul * 1000ul, micros, 1)
+               << task_type(fsm_eval, 25ul, millis, 1)
 
-               << (task_type(read_icm42688, 50ul * 1000ul, micros, 1), pvalid.imu_icm42688)
-               << (task_type(read_icm20948, 50ul * 1000ul, micros, 1), pvalid.imu_icm20948)
+               << (task_type(read_icm42688, 50ul, millis, 1), pvalid.imu_icm42688)
+               << (task_type(read_icm20948, 50ul, millis, 1), pvalid.imu_icm20948)
                << (task_type(read_ms, &ms1_ref, 10ul, millis, 2), pvalid.ms1)
                << (task_type(read_ms, &ms2_ref, 10ul, millis, 2), pvalid.ms2)
                << (task_type(read_gnss, 100ul, millis, 2), pvalid.gnss_m9v)
 
                << task_type(accept_command, &UART_RFD900X, 100ul, millis, 252)
 
-               << task_type(construct_data, 50ul, millis, 253)
-               << (task_type(save_data, &log_interval, 0ul, millis, 254), pvalid.sd)  // Adaptive
-               << task_type(transmit_data, &tx_interval, 0ul, millis, 254)            // Adaptive
+               << task_type(construct_data, 25ul, millis, 253)
+               << (task_type(save_data, &log_interval, 254), pvalid.sd)  // Adaptive
+               << task_type(transmit_data, &tx_interval, 254)            // Adaptive
 
-               << task_type(read_core_temp, 500ul, millis, 255);
+               << task_type(read_internal, 500ul, millis, 255);
 
     // Low power mode
     // See details: https://github.com/stm32duino/STM32LowPower/blob/main/README.md
@@ -338,6 +466,42 @@ void setup() {
     });
 
     // Peripheral validation
+    {
+        constexpr auto blink_green = [] {
+            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_B, 1);
+            gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+            delay(luna::config::BUZZER_ON_INTERVAL);
+            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+            delay(250);
+        };
+
+        constexpr auto blink_red = [] {
+            gpio_write << io_function::set(luna::pins::gpio::LED_R, 1);
+            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+            delay(luna::config::BUZZER_ON_INTERVAL * 5);
+            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
+            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+            delay(250);
+        };
+
+        for (const uint8_t status: pvalid.arr) {
+            if (status) {
+                blink_green();
+            } else {
+                blink_red();
+            }
+        }
+    }
+
     tx_data.reserve(512);
     sd_data.reserve(768);
     pvalid >> USB_DEBUG << stream::crlf;
@@ -349,14 +513,16 @@ void setup() {
     // log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
 
     // Reset timers before starting
+    gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
     dispatcher.reset();
 }
 
 void loop() { dispatcher(); }
 
-void init_storage(FsUtil<sd_t, file_t> &sd_util_instance) {
+template<typename SdType, typename FileType>
+void init_storage(FsUtil<SdType, FileType> &sd_util_instance) {
     sd_util_instance.find_file_name(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
-    sd_util_instance.open_one<FsMode::WRITE>();
+    sd_util_instance.template open_one<FsMode::WRITE>();
 }
 
 void read_continuity() {
@@ -365,13 +531,14 @@ void read_continuity() {
     sensor_data.cont_c = gpio_read.sample<128>(luna::pins::pyro::SENS_C);
 }
 
-void read_core_temp() {
+void read_internal() {
     sensor_data.cpu_temp = internal::read_cpu_temp(internal::read_vref());
+    sensor_data.batt_v   = ina236.getBusVoltage();
 }
 
 void read_gnss() {
     if (gnss_m9v.getPVT(luna::config::UBLOX_CUSTOM_MAX_WAIT)) {
-        sensor_data.timestamp = gnss_m9v.getUnixEpoch(luna::config::UBLOX_CUSTOM_MAX_WAIT);
+        sensor_data.timestamp = gnss_m9v.getUnixEpoch(sensor_data.timestamp_us, luna::config::UBLOX_CUSTOM_MAX_WAIT);
         sensor_data.gps_siv   = gnss_m9v.getSIV(luna::config::UBLOX_CUSTOM_MAX_WAIT);
         sensor_data.gps_lat   = static_cast<double>(gnss_m9v.getLatitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
         sensor_data.gps_lon   = static_cast<double>(gnss_m9v.getLongitude(luna::config::UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
@@ -381,50 +548,53 @@ void read_gnss() {
 
 void read_ms(ms_ref_t *ms) {
     ms->ms.read();
-    ms->temp = ms->ms.getTemperature();
-    ms->pres = ms->ms.getPressure();
-    // todo: FIX THIS SHIT AND ALL KALMAN FILTERS
-    // ms->kf << ms->ms.getPressure();
-    // ms->pres = ms->kf.x();
-    ms->alt  = pressure_altitude(ms->pres);
+    if (const float t = ms->ms.getTemperature(); t > 0.)
+        ms->temp = t;
+    if (const float p = ms->ms.getPressure(); p > 0.)
+        ms->pres = p;
+    ms->alt = pressure_altitude(ms->pres);
 }
 
 void read_icm20948() {
     if (imu_icm20948.dataReady()) {
         imu_icm20948.getAGMT();
+
+        // !!! DIRECTION TUNED !!!
         sensor_data.imu_2.acc.x  = -imu_icm20948.accY() * 0.001 * 9.81;
         sensor_data.imu_2.acc.y  = -imu_icm20948.accX() * 0.001 * 9.81;
         sensor_data.imu_2.acc.z  = imu_icm20948.accZ() * 0.001 * 9.81;
-        sensor_data.imu_2.gyro.x = imu_icm20948.gyrY();
-        sensor_data.imu_2.gyro.y = imu_icm20948.gyrX();
+        sensor_data.imu_2.gyro.x = -imu_icm20948.gyrY();
+        sensor_data.imu_2.gyro.y = -imu_icm20948.gyrX();
         sensor_data.imu_2.gyro.z = imu_icm20948.gyrZ();
     }
 }
 
 void read_icm42688() {
     imu_icm42688.readSensor();
+
+    // !!! DIRECTION TUNED !!!
     sensor_data.imu_1.acc.x  = -imu_icm42688.getAccelX_mss();
     sensor_data.imu_1.acc.y  = -imu_icm42688.getAccelY_mss();
     sensor_data.imu_1.acc.z  = -imu_icm42688.getAccelZ_mss();
-    sensor_data.imu_1.gyro.x = imu_icm42688.getGyroX_dps();
-    sensor_data.imu_1.gyro.y = imu_icm42688.getGyroY_dps();
-    sensor_data.imu_1.gyro.z = imu_icm42688.getGyroZ_dps();
+    sensor_data.imu_1.gyro.x = -imu_icm42688.getGyroX_dps();
+    sensor_data.imu_1.gyro.y = -imu_icm42688.getGyroY_dps();
+    sensor_data.imu_1.gyro.z = -imu_icm42688.getGyroZ_dps();
 
-    for (size_t i = 0; i < 3; ++i) {
-        // Acc KF
-        filters.imu_1.acc.values[i] << sensor_data.imu_1.acc.values[i];
-        sensor_data.imu_1.acc.values[i] = filters.imu_1.acc.values[i].x();
-        // Gyro KF
-        filters.imu_1.gyro.values[i] << sensor_data.imu_1.gyro.values[i];
-        sensor_data.imu_1.gyro.values[i] = filters.imu_1.gyro.values[i].x();
-    }
+    // for (size_t i = 0; i < 3; ++i) {
+    //     // Acc KF
+    //     filters.imu_1.acc.values[i] << sensor_data.imu_1.acc.values[i];
+    //     sensor_data.imu_1.acc.values[i] = filters.imu_1.acc.values[i].x();
+    //     // Gyro KF
+    //     filters.imu_1.gyro.values[i] << sensor_data.imu_1.gyro.values[i];
+    //     sensor_data.imu_1.gyro.values[i] = filters.imu_1.gyro.values[i].x();
+    // }
 }
 
 void accept_command(HardwareSerial *istream) {
     Stream &stream = *istream;  // Alias to istream
 
     if (!stream.available()) return;
-    delayMicroseconds(20ul * 1000ul);
+    delay(20ul);
 
     String rx_message = "";
     rx_message.reserve(64);
@@ -433,8 +603,16 @@ void accept_command(HardwareSerial *istream) {
         rx_message += static_cast<char>(stream.read());
     }
 
+    // Debug echo back
+    // stream.print("Received: ");
+    // stream.println(rx_message);
+
     // Repeats for at least 5 times before continuing
-    if (rx_message.substring(0, 4) != "cmd ") return;
+    if (rx_message.substring(0, 4) != "cmd ") {
+        // Return if cmd header is invalid
+        ++sensor_data.last_nack;
+        return;
+    }
 
     String command = rx_message.substring(4);
     command.trim();
@@ -462,7 +640,21 @@ void accept_command(HardwareSerial *istream) {
             tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
             log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
         }
-
+    } else if (command == "manual-trigger-a") {
+        if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
+            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A);
+            sensor_data.pyro_a = luna::pyro_state_t::FIRING;
+        }
+    } else if (command == "manual-trigger-b") {
+        if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
+            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_B);
+            sensor_data.pyro_b = luna::pyro_state_t::FIRING;
+        }
+    } else if (command == "manual-trigger-c") {
+        if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
+            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_C);
+            sensor_data.pyro_c = luna::pyro_state_t::FIRING;
+        }
     } else if (command == "launch-override") {
         launch_override = true;
 
@@ -514,20 +706,18 @@ void accept_command(HardwareSerial *istream) {
 }
 
 void construct_data() {
-    // todo: Revert back to each tx and sd data
     tx_data = "";
     csv_stream_crlf(tx_data)
             << "<45>"
             << sensor_data.timestamp
-            << sensor_data.tx_pc++
+            << sensor_data.timestamp_us
+            << millis()
             << luna::state_string(sensor_data.ps)
 
-            << sensor_data.gps_siv
             << String(sensor_data.gps_lat, 6)
             << String(sensor_data.gps_lon, 6)
             << String(sensor_data.ms_alt_fusion - sensor_data.ms_alt_gnd, 4)
 
-            << "PYRO"
             << luna::pyro_state_string(sensor_data.pyro_a)
             << luna::pyro_state_string(sensor_data.pyro_b)
             << luna::pyro_state_string(sensor_data.pyro_c)
@@ -535,16 +725,17 @@ void construct_data() {
             << sensor_data.cont_b
             << sensor_data.cont_c
 
-            << "MS1" << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-            << "MS2" << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
+            << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
+            << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
 
-            << "A1" << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-            << "G1" << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
+            << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
+            << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
 
-            << "A2" << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
-            << "G2" << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
+            << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
+            << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
 
-            << "CPU_T" << sensor_data.cpu_temp
+            << sensor_data.cpu_temp
+            << sensor_data.batt_v
             << sensor_data.last_ack
             << sensor_data.last_nack;
 }
@@ -705,7 +896,7 @@ void fsm_eval() {
             sensor_data.ps         = luna::state_t::DROGUE_DESCEND;
 
             // todo: Implement real firing
-            sensor_data.pyro_a = luna::pyro_state_t::FIRED;
+            sensor_data.pyro_a = luna::pyro_state_t::FIRING;
 
             break;
         }
@@ -747,7 +938,7 @@ void fsm_eval() {
             sensor_data.ps         = luna::state_t::MAIN_DESCEND;
 
             // todo: Implement real firing
-            sensor_data.pyro_b = luna::pyro_state_t::FIRED;
+            sensor_data.pyro_b = luna::pyro_state_t::FIRING;
             break;
         }
         case luna::state_t::MAIN_DESCEND: {
@@ -845,22 +1036,30 @@ void led_control(on_off_timer::interval_params *intervals_ms) {
     timer.on_rising([&]() -> void {
         switch (sensor_data.ps) {
             case luna::state_t::IDLE_SAFE:
-                onboard_led.value = 0b010;
+                onboard_led.value = luna::RGB_MASK::GREEN;
                 break;
 
             case luna::state_t::ARMED:
-                if (onboard_led.value == 0b100)
-                    onboard_led.value = 0b010;
+                if (onboard_led.value == luna::RGB_MASK::RED)
+                    onboard_led.value = luna::RGB_MASK::GREEN;
                 else
-                    onboard_led.value = 0b100;
+                    onboard_led.value = luna::RGB_MASK::RED;
                 break;
 
             case luna::state_t::PAD_PREOP:
-                onboard_led.value = 0b100;
+                onboard_led.value = luna::RGB_MASK::RED;
+                break;
+
+            case luna::state_t::LANDED:
+                onboard_led.value = luna::RGB_MASK::BLUE;
+                break;
+
+            case luna::state_t::RECOVERED_SAFE:
+                onboard_led.value = luna::RGB_MASK::GREEN;
                 break;
 
             default:
-                onboard_led.value = 0b111;
+                onboard_led.value = luna::RGB_MASK::WHITE;
                 break;
         }
 

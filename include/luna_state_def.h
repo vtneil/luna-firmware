@@ -32,17 +32,17 @@ namespace luna {
             case state_t::COASTING:
                 return "COASTING";
             case state_t::DROGUE_DEPLOY:
-                return "DROGUE_DEPLOY";
+                return "DROG_DEPL";
             case state_t::DROGUE_DESCEND:
-                return "DROGUE_DESCEND";
+                return "DROG_DESC";
             case state_t::MAIN_DEPLOY:
-                return "MAIN_DEPLOY";
+                return "MAIN_DEPL";
             case state_t::MAIN_DESCEND:
-                return "MAIN_DESCEND";
+                return "MAIN_DESC";
             case state_t::LANDED:
                 return "LANDED";
             case state_t::RECOVERED_SAFE:
-                return "RECOVERED_SAFE";
+                return "REC_SAFE";
             default:
                 __builtin_unreachable();
         }
@@ -51,17 +51,20 @@ namespace luna {
     enum class pyro_state_t : uint8_t {
         DISARMED = 0,
         ARMED,
+        FIRING,
         FIRED
     };
 
     inline const char *pyro_state_string(const pyro_state_t state) {
         switch (state) {
             case pyro_state_t::DISARMED:
-                return "DISARMED";
+                return "D";
             case pyro_state_t::ARMED:
-                return "ARMED";
+                return "A";
+            case pyro_state_t::FIRING:
+                return "F";
             case pyro_state_t::FIRED:
-                return "FIRED";
+                return "X";
             default:
                 __builtin_unreachable();
         }

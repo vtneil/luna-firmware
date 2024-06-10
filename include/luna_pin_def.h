@@ -87,4 +87,17 @@ namespace luna::pins {
     }  // namespace tmc2209
 }  // namespace luna::pins
 
+namespace luna {
+    enum RGB_MASK {
+        BLACK = 0b000,
+        BLUE,
+        GREEN,
+        CYAN,
+        RED,
+        MAGENTA,
+        YELLOW,
+        WHITE
+    };
+}
+
 #endif  //LUNA_FIRMWARE_LUNA_PIN_DEF_H

@@ -22,6 +22,11 @@ namespace vt {
         } && std::integral<T>;
     }  // namespace traits
 
+    namespace dummy {
+        template<typename TimeType>
+        constexpr TimeType get_time() { return 0; }
+    }  // namespace dummy
+
     template<size_t MaxTasks, template<typename> class SmartDelay, std::integral TimeType>
         requires traits::smart_delay_variant<SmartDelay<TimeType>, TimeType>
     class task_dispatcher;
@@ -72,10 +77,21 @@ namespace vt {
             : m_func{functional::ptr_to_void_cast(task_func)}, m_arg(arg),
               m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
 
+        // Function taking argument pointer (no delay)
+        template<typename Arg>
+        task_t(func_ptr_Targ<Arg> task_func, Arg *arg, const priority_t priority = 0)
+            : m_func{functional::ptr_to_void_cast(task_func)}, m_arg(arg),
+              m_sd{smart_delay_t(0, dummy::get_time<TimeType>)}, m_priority{priority} {}
+
         // Function taking nothing
         task_t(const func_ptr task_func, const TimeType interval, const time_func_t time_func, const priority_t priority = 0)
             : m_func{reinterpret_cast<func_ptr_arg>(task_func)}, m_arg(nullptr),
               m_sd{smart_delay_t(interval, time_func)}, m_priority{priority} {}
+
+        // Function taking nothing (no delay)
+        explicit task_t(const func_ptr task_func, const priority_t priority = 0)
+            : m_func{reinterpret_cast<func_ptr_arg>(task_func)}, m_arg(nullptr),
+              m_sd{smart_delay_t(0, dummy::get_time<TimeType>)}, m_priority{priority} {}
 
         task_t &operator=(const task_t &other) {
             if (this == &other) {

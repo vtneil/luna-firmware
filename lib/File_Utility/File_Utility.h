@@ -14,9 +14,14 @@ enum class FsMode : uint8_t {
 template<typename SdClass = SdExFat, typename FileClass = ExFile>
 class FsUtil {
 protected:
-    SdClass m_sd      = {};
-    FileClass m_file  = {};
-    String m_filename = {};
+    SdCardFactory m_factory = {};
+    SdCard *m_card          = {};
+    uint32_t m_sector_count = {};
+    uint8_t m_buf[512]      = {};
+
+    SdClass m_sd            = {};
+    FileClass m_file        = {};
+    String m_filename       = {};
 
     struct ls_helper {
         SdClass &m_sd;
@@ -107,6 +112,54 @@ public:
             m_filename = "";
             m_filename << prefix << file_idx++ << "." << extension;
         } while (m_sd.exists(m_filename.c_str()));
+    }
+
+    int8_t fmt_new_card(const SdSpiConfig &sd_config) {
+        m_card = m_factory.newCard(sd_config);
+
+        if (!m_card || m_card->errorCode()) {
+            return 1;
+        }
+
+        m_sector_count = m_card->sectorCount();
+
+        if (!m_sector_count) {
+            return 2;
+        }
+
+        return 0;
+    }
+
+    int8_t fmt_erase_card() {
+        static constexpr uint32_t ERASE_SIZE = 262144L;
+        uint32_t first_block                 = 0;
+
+
+        do {
+            uint32_t last_block = first_block + ERASE_SIZE - 1;
+            if (last_block >= m_sector_count) {
+                last_block = m_sector_count - 1;
+            }
+
+            if (!m_card->erase(first_block, last_block)) {
+                return 1;
+            }
+
+            first_block += ERASE_SIZE;
+        } while (first_block < m_sector_count);
+
+        if (!m_card->readSector(0, m_buf)) {
+            return 2;
+        }
+
+        return 0;
+    }
+
+    int8_t fmt_format_card(Print &print) {
+        if constexpr (std::is_same_v<SdExFat, SdClass>)
+            return !ExFatFormatter().format(m_card, m_buf, &print);
+        else
+            return !FatFormatter().format(m_card, m_buf, &print);
     }
 };
 

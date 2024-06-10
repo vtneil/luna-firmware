@@ -152,7 +152,7 @@ namespace vt {
             : sd_on{SmartDelay(interval_on, time_func)}, sd_off{SmartDelay(interval_off, time_func)} {}
 
         template<traits::procedure Proc>
-        void on_rising(Proc &&proc) {
+        on_off_timer &on_rising(Proc &&proc) {
             if (!is_on) {  // if 0
                 sd_off([&]() -> void {
                     proc();
@@ -160,10 +160,12 @@ namespace vt {
                     sd_on.reset();
                 });
             }
+
+            return *this;
         }
 
         template<traits::procedure Proc>
-        void on_falling(Proc &&proc) {
+        on_off_timer &on_falling(Proc &&proc) {
             if (is_on) {  // if 1
                 sd_on([&]() -> void {
                     proc();
@@ -171,6 +173,8 @@ namespace vt {
                     sd_off.reset();
                 });
             }
+
+            return *this;
         }
 
         TimeType interval_on() {

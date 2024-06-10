@@ -116,6 +116,7 @@ namespace luna {
 
         // Internal (32 bit)
         int32_t cpu_temp{};
+        float batt_v{};
 
         // Pyro continuity (24 bit)
         uint8_t cont_a{};

@@ -2,8 +2,22 @@
 #define LUNA_PERIPHERAL_DEF_H
 
 #include <cstdint>
+#include "luna_pin_def.h"
 
 namespace luna::config {
+    constexpr uint32_t PYRO_ACTIVATE_INTERVAL = 1000ul;
+
+    constexpr auto HZ_TO_INTERVAL_MS          = [](const double FREQUENCY_HZ) -> uint32_t {
+        return 1000ul / FREQUENCY_HZ;
+    };
+
+    constexpr uint8_t INA236_ADDRESS = 0x40;
+
+    enum INA236ADCRange {
+        RANGE_80MV = 0,
+        RANGE_20MV = 1
+    };
+
     constexpr uint32_t TIME_TO_APOGEE_MIN  = 25 * 1000ul;
     constexpr uint32_t TIME_TO_APOGEE_MAX  = 30 * 1000ul;
     constexpr uint32_t TIME_TO_BURNOUT_MIN = 4 * 1000ul;
@@ -23,24 +37,24 @@ namespace luna::config {
     constexpr uint32_t SD_SPI_CLOCK_MHZ          = 20ul;   // 20 MHz
     constexpr size_t MESSAGE_BUFFER_SIZE         = 512ul;
 
-    constexpr uint32_t TX_IDLE_INTERVAL          = 1000ul;  // 1 Hz
-    constexpr uint32_t TX_ARMED_INTERVAL         = 500ul;   // 2 Hz
-    constexpr uint32_t TX_PAD_PREOP_INTERVAL     = 200ul;   // 5 Hz
-    constexpr uint32_t TX_ASCEND_INTERVAL        = 200ul;   // 5 Hz
-    constexpr uint32_t TX_DESCEND_INTERVAL       = 200ul;   // 5 Hz
+    constexpr uint32_t TX_IDLE_INTERVAL          = HZ_TO_INTERVAL_MS(1);  // 1 Hz
+    constexpr uint32_t TX_ARMED_INTERVAL         = HZ_TO_INTERVAL_MS(2);  // 2 Hz
+    constexpr uint32_t TX_PAD_PREOP_INTERVAL     = HZ_TO_INTERVAL_MS(4);  // 5 Hz
+    constexpr uint32_t TX_ASCEND_INTERVAL        = HZ_TO_INTERVAL_MS(5);  // 5 Hz
+    constexpr uint32_t TX_DESCEND_INTERVAL       = HZ_TO_INTERVAL_MS(4);  // 5 Hz
 
-    constexpr uint32_t LOG_IDLE_INTERVAL         = 1000ul;  // 1 Hz
-    constexpr uint32_t LOG_ARMED_INTERVAL        = 500ul;   // 2 Hz
-    constexpr uint32_t LOG_PAD_PREOP_INTERVAL    = 100ul;   // 10 Hz
-    constexpr uint32_t LOG_ASCEND_INTERVAL       = 50ul;    // 20 Hz
-    constexpr uint32_t LOG_DESCEND_INTERVAL      = 100ul;   // 10 Hz
+    constexpr uint32_t LOG_IDLE_INTERVAL         = HZ_TO_INTERVAL_MS(1);   // 1 Hz
+    constexpr uint32_t LOG_ARMED_INTERVAL        = HZ_TO_INTERVAL_MS(2);   // 2 Hz
+    constexpr uint32_t LOG_PAD_PREOP_INTERVAL    = HZ_TO_INTERVAL_MS(10);  // 10 Hz
+    constexpr uint32_t LOG_ASCEND_INTERVAL       = HZ_TO_INTERVAL_MS(20);  // 20 Hz
+    constexpr uint32_t LOG_DESCEND_INTERVAL      = HZ_TO_INTERVAL_MS(10);  // 10 Hz
 
-    constexpr uint32_t BUZZER_ON_INTERVAL        = 25ul;    // 50 ms
-    constexpr uint32_t BUZZER_IDLE_INTERVAL      = 1000ul;  // 1 Hz
-    constexpr uint32_t BUZZER_ARMED_INTERVAL     = 500ul;   // 2 Hz
-    constexpr uint32_t BUZZER_PAD_PREOP_INTERVAL = 100ul;   // 10 Hz
-    constexpr uint32_t BUZZER_ASCEND_INTERVAL    = 5000ul;  // 0.2 Hz
-    constexpr uint32_t BUZZER_DESCEND_INTERVAL   = 1000ul;  // 1 Hz
+    constexpr uint32_t BUZZER_ON_INTERVAL        = 50ul;                    // 50 ms
+    constexpr uint32_t BUZZER_IDLE_INTERVAL      = HZ_TO_INTERVAL_MS(1);    // 1 Hz
+    constexpr uint32_t BUZZER_ARMED_INTERVAL     = HZ_TO_INTERVAL_MS(2);    // 2 Hz
+    constexpr uint32_t BUZZER_PAD_PREOP_INTERVAL = HZ_TO_INTERVAL_MS(10);   // 10 Hz
+    constexpr uint32_t BUZZER_ASCEND_INTERVAL    = HZ_TO_INTERVAL_MS(0.2);  // 0.2 Hz
+    constexpr uint32_t BUZZER_DESCEND_INTERVAL   = HZ_TO_INTERVAL_MS(1);    // 1 Hz
 
     constexpr auto BUZZER_OFF_INTERVAL           = [](const uint32_t BUZZER_TOTAL_INTERVAL) -> uint32_t {
         return BUZZER_TOTAL_INTERVAL - BUZZER_ON_INTERVAL;
