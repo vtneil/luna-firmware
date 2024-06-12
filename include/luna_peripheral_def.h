@@ -8,7 +8,7 @@ namespace luna::config {
     constexpr uint32_t PYRO_ACTIVATE_INTERVAL = 1000ul;
 
     constexpr auto HZ_TO_INTERVAL_MS          = [](const double FREQUENCY_HZ) -> uint32_t {
-        return 1000ul / FREQUENCY_HZ;
+        return static_cast<uint32_t>(1000. / FREQUENCY_HZ);
     };
 
     constexpr uint8_t INA236_ADDRESS = 0x40;
@@ -18,8 +18,8 @@ namespace luna::config {
         RANGE_20MV = 1
     };
 
-    constexpr uint32_t TIME_TO_APOGEE_MIN  = 25 * 1000ul;
-    constexpr uint32_t TIME_TO_APOGEE_MAX  = 30 * 1000ul;
+    constexpr uint32_t TIME_TO_APOGEE_MIN  = 23 * 1000ul;
+    constexpr uint32_t TIME_TO_APOGEE_MAX  = 27 * 1000ul;
     constexpr uint32_t TIME_TO_BURNOUT_MIN = 4 * 1000ul;
     constexpr uint32_t TIME_TO_BURNOUT_MAX = 6 * 1000ul;
 

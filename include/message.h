@@ -147,10 +147,6 @@ namespace luna {
         float ms2_temp{};
         float ms2_alt{};
 
-        // MS Fusion (64 bit)
-        float ms_alt_gnd{};
-        float ms_alt_fusion{};
-
         // IMU ICM42688 (384 bit)
         struct {
             vec3_u<double> acc;

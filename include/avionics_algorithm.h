@@ -254,11 +254,8 @@ namespace algorithm {
 
     public:
         constexpr void add(const bool pred) {
-            if (pred) {
-                ++true_count;
-            } else {
-                ++false_count;
-            }
+            true_count += pred;
+            false_count += 1 - pred;
         }
 
         constexpr void reset() {
