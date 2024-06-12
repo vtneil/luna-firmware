@@ -2,18 +2,20 @@
 #define LUNA_FIRMWARE_LUNA_PIN_DEF_H
 
 #include <PinNames.h>
+#include <Arduino_Extended.h>
 
 namespace luna::pins {
     namespace power {
         constexpr PinName PIN_24V = PB_12;
     }
+
     namespace gpio {
         constexpr PinName LED_R  = PE_13;  // Onboard RGB LED R
         constexpr PinName LED_G  = PE_12;  // Onboard RGB LED G
         constexpr PinName LED_B  = PE_14;  // Onboard RGB LED B
-        constexpr PinName BUZZER = PD_9;  // Onboard buzzer
-        constexpr PinName USER_1 = PF_9;  // Onboard push button 1
-        constexpr PinName USER_2 = PF_8;  // Onboard push button 2
+        constexpr PinName BUZZER = PD_9;   // Onboard buzzer
+        constexpr PinName USER_1 = PF_9;   // Onboard push button 1
+        constexpr PinName USER_2 = PF_8;   // Onboard push button 2
     }  // namespace gpio
 
     namespace pyro {
@@ -21,9 +23,9 @@ namespace luna::pins {
         constexpr PinName SIG_B  = PG_4;
         constexpr PinName SIG_C  = PG_5;
 
-        constexpr PinName SENS_A = PG_6;
+        constexpr PinName SENS_A = PG_8;
         constexpr PinName SENS_B = PG_7;
-        constexpr PinName SENS_C = PG_8;
+        constexpr PinName SENS_C = PG_6;
     }  // namespace pyro
 
     namespace comm {
@@ -85,6 +87,25 @@ namespace luna::pins {
         constexpr PinName UART_TX = PC_6;
         constexpr PinName UART_RX = PC_7;
     }  // namespace tmc2209
+
+    constexpr auto SET_LED = [](const int v) {
+        gpio_write << io_function::set(gpio::LED_R, BITS_AT(v, 2))
+                   << io_function::set(gpio::LED_G, BITS_AT(v, 1))
+                   << io_function::set(gpio::LED_B, BITS_AT(v, 0));
+    };
+
+    constexpr auto PINS_OFF = [] {
+        gpio_write << io_function::pull_low(gpio::LED_R)
+                   << io_function::pull_low(gpio::LED_G)
+                   << io_function::pull_low(gpio::LED_B)
+                   << io_function::pull_low(gpio::BUZZER)
+                   << io_function::pull_low(pyro::SIG_A)
+                   << io_function::pull_low(pyro::SIG_B)
+                   << io_function::pull_low(pyro::SIG_C);
+    };
+
+    constexpr auto PINS_RESTORE = [] {
+    };
 }  // namespace luna::pins
 
 namespace luna {

@@ -80,13 +80,21 @@ namespace luna {
     enum class pyro_state_t : uint8_t;
 
     template<typename T>
-    union axis_data_u {
-        T values[3]{};
+    union vec3_u {
+        struct {
+            T values[3]{};
+        };
+
         struct {
             T x;
             T y;
             T z;
         };
+
+        template<typename... Args>
+        explicit vec3_u(Args &&...args) : x{T(std::forward<Args>(args)...)},
+                                          y{T(std::forward<Args>(args)...)},
+                                          z{T(std::forward<Args>(args)...)} {}
     };
 
     union regs_u {
@@ -145,15 +153,15 @@ namespace luna {
 
         // IMU ICM42688 (384 bit)
         struct {
-            axis_data_u<double> acc;
-            axis_data_u<double> gyro;
+            vec3_u<double> acc;
+            vec3_u<double> gyro;
         } imu_1;
 
         // IMU ICM20948 (576 bit)
         struct {
-            axis_data_u<double> acc;
-            axis_data_u<double> gyro;
-            axis_data_u<double> mag;
+            vec3_u<double> acc;
+            vec3_u<double> gyro;
+            vec3_u<double> mag;
         } imu_2;
 
         uint8_t last_ack{};

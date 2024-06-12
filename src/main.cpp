@@ -45,12 +45,18 @@ using on_off_timer = vt::on_off_timer<time_type>;
 using task_type    = vt::task_t<vt::smart_delay, time_type>;
 
 template<size_t N>
-using dispatcher_type = vt::task_dispatcher<N, vt::smart_delay, time_type>;
+using dispatcher_type         = vt::task_dispatcher<N, vt::smart_delay, time_type>;
 
-using sd_sd_t         = SdExFat;
-using sd_file_t       = ExFile;
-using flash_sd_t      = SdFat32;
-using flash_file_t    = File32;
+using sd_sd_t                 = SdExFat;
+using sd_file_t               = ExFile;
+using flash_sd_t              = SdFat32;
+using flash_file_t            = File32;
+
+constexpr size_t FILTER_ORDER = 4;
+constexpr double dt_base      = 0.1;
+constexpr double covariance   = 0.1;
+constexpr double alpha        = 0.001;
+constexpr double beta         = 0.001;
 
 // Type defs
 
@@ -90,9 +96,9 @@ struct ms_ref_t {
     float &temp;
     float &pres;
     float &alt;
-    algorithm::KalmanFilter_1D &kf;
+    vt::kf_pos<FILTER_ORDER> &kf;
 
-    ms_ref_t(MS5611_SPI &t_ms, float &t_temp, float &t_pres, float &t_alt, algorithm::KalmanFilter_1D &t_kf)
+    ms_ref_t(MS5611_SPI &t_ms, float &t_temp, float &t_pres, float &t_alt, vt::kf_pos<FILTER_ORDER> &t_kf)
         : ms{t_ms}, temp{t_temp}, pres{t_pres}, alt{t_alt}, kf{t_kf} {}
 };
 
@@ -140,13 +146,13 @@ uint8_t rx_buffer[luna::config::MESSAGE_BUFFER_SIZE];
 
 // Software filters
 struct software_filters {
-    struct {
-        luna::axis_data_u<algorithm::KalmanFilter_1D> acc;
-        luna::axis_data_u<algorithm::KalmanFilter_1D> gyro;
-    } imu_1;
+    vt::kf_pos<FILTER_ORDER> ms1_pres{dt_base, covariance, alpha, beta};
+    vt::kf_pos<FILTER_ORDER> ms2_pres{dt_base, covariance, alpha, beta};
 
-    algorithm::KalmanFilter_1D ms1_pres;
-    algorithm::KalmanFilter_1D ms2_pres;
+    struct {
+        luna::vec3_u<vt::kf_pos<4>> acc{dt_base, covariance, alpha, beta};
+        luna::vec3_u<vt::kf_pos<4>> gyro{dt_base, covariance, alpha, beta};
+    } imu_1, imu_2;
 } filters;
 
 // Communication data
@@ -207,9 +213,7 @@ extern void save_data(time_type *interval_ms);
 
 extern void fsm_eval();
 
-extern void buzzer_control(on_off_timer::interval_params *intervals_ms);
-
-extern void led_control(on_off_timer::interval_params *intervals_ms);
+extern void buzzer_led_control(on_off_timer::interval_params *intervals_ms);
 
 void setup() {
     // GPIO and Digital Pins
@@ -223,15 +227,11 @@ void setup() {
 
     // SCREW SWITCH DEBOUNCE WAIT
 
-    gpio_write << io_function::pull_high(luna::pins::gpio::LED_R);
-    gpio_write << io_function::pull_low(luna::pins::gpio::LED_G);
-    gpio_write << io_function::pull_high(luna::pins::gpio::LED_B);
-
+    luna::pins::SET_LED(luna::MAGENTA);
     delay(500);
+    luna::pins::SET_LED(luna::WHITE);
 
-    gpio_write << io_function::pull_high(luna::pins::gpio::LED_R);
-    gpio_write << io_function::pull_high(luna::pins::gpio::LED_G);
-    gpio_write << io_function::pull_high(luna::pins::gpio::LED_B);
+    // GPIO Configuration
 
     dout_low << luna::pins::gpio::BUZZER;
 
@@ -438,8 +438,7 @@ void setup() {
 
     // Task initialization
     dispatcher << task_type(read_continuity, 500ul, micros, 0)
-               << task_type(buzzer_control, &buzzer_intervals, 0)  // Adaptive
-               << task_type(led_control, &buzzer_intervals, 0)     // Adaptive
+               << task_type(buzzer_led_control, &buzzer_intervals, 0)  // Adaptive
                << task_type(pyro_cutoff, 100, millis, 0)
 
                << task_type(fsm_eval, 25ul, millis, 1)
@@ -461,34 +460,26 @@ void setup() {
     // Low power mode
     // See details: https://github.com/stm32duino/STM32LowPower/blob/main/README.md
     LowPower.begin();
-    LowPower.enableWakeupFrom(&UART_RFD900X, []() -> void {
+    LowPower.enableWakeupFrom(&UART_RFD900X, [] {
         accept_command(&UART_RFD900X);
     });
 
     // Peripheral validation
     {
         constexpr auto blink_green = [] {
-            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_B, 1);
+            luna::pins::SET_LED(luna::BLUE);
             gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
             delay(luna::config::BUZZER_ON_INTERVAL);
-            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            luna::pins::SET_LED(luna::BLACK);
             gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
             delay(250);
         };
 
         constexpr auto blink_red = [] {
-            gpio_write << io_function::set(luna::pins::gpio::LED_R, 1);
-            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            luna::pins::SET_LED(luna::RED);
             gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
             delay(luna::config::BUZZER_ON_INTERVAL * 5);
-            gpio_write << io_function::set(luna::pins::gpio::LED_R, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_G, 0);
-            gpio_write << io_function::set(luna::pins::gpio::LED_B, 0);
+            luna::pins::SET_LED(luna::BLACK);
             gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
             delay(250);
         };
@@ -547,47 +538,82 @@ void read_gnss() {
 }
 
 void read_ms(ms_ref_t *ms) {
+    static uint32_t t_prev = millis();
+
     ms->ms.read();
-    if (const float t = ms->ms.getTemperature(); t > 0.)
+
+    if (const float t = ms->ms.getTemperature(); t > 0.) {
         ms->temp = t;
-    if (const float p = ms->ms.getPressure(); p > 0.)
-        ms->pres = p;
+    }
+
+    if (const float p = ms->ms.getPressure(); p > 0.) {
+        ms->kf.update_dt(millis() - t_prev);
+        ms->kf.kf.predict().update(p);
+        ms->pres = ms->kf.kf.state;
+    }
+
     ms->alt = pressure_altitude(ms->pres);
+
+    t_prev  = millis();
 }
 
 void read_icm20948() {
+    static uint32_t t_prev = millis();
+
     if (imu_icm20948.dataReady()) {
         imu_icm20948.getAGMT();
 
         // !!! DIRECTION TUNED !!!
-        sensor_data.imu_2.acc.x  = -imu_icm20948.accY() * 0.001 * 9.81;
-        sensor_data.imu_2.acc.y  = -imu_icm20948.accX() * 0.001 * 9.81;
-        sensor_data.imu_2.acc.z  = imu_icm20948.accZ() * 0.001 * 9.81;
+        // Acc: milli-G unit to mss
+        sensor_data.imu_2.acc.x  = -imu_icm20948.accY() * (0.001 * 9.81);
+        sensor_data.imu_2.acc.y  = -imu_icm20948.accX() * (0.001 * 9.81);
+        sensor_data.imu_2.acc.z  = imu_icm20948.accZ() * (0.001 * 9.81);
         sensor_data.imu_2.gyro.x = -imu_icm20948.gyrY();
         sensor_data.imu_2.gyro.y = -imu_icm20948.gyrX();
         sensor_data.imu_2.gyro.z = imu_icm20948.gyrZ();
     }
+
+    for (size_t i = 0; i < 3; ++i) {
+        const uint32_t dt = millis() - t_prev;
+        filters.imu_2.acc.values[i].update_dt(dt);
+        filters.imu_2.gyro.values[i].update_dt(dt);
+
+        filters.imu_2.acc.values[i].kf.predict().update(sensor_data.imu_2.acc.values[i]);
+        filters.imu_2.gyro.values[i].kf.predict().update(sensor_data.imu_2.gyro.values[i]);
+
+        sensor_data.imu_2.acc.values[i]  = filters.imu_2.acc.values[i].kf.state;
+        sensor_data.imu_2.gyro.values[i] = filters.imu_2.gyro.values[i].kf.state;
+    }
+
+    t_prev = millis();
 }
 
 void read_icm42688() {
-    imu_icm42688.readSensor();
+    static uint32_t t_prev = millis();
 
-    // !!! DIRECTION TUNED !!!
-    sensor_data.imu_1.acc.x  = -imu_icm42688.getAccelX_mss();
-    sensor_data.imu_1.acc.y  = -imu_icm42688.getAccelY_mss();
-    sensor_data.imu_1.acc.z  = -imu_icm42688.getAccelZ_mss();
-    sensor_data.imu_1.gyro.x = -imu_icm42688.getGyroX_dps();
-    sensor_data.imu_1.gyro.y = -imu_icm42688.getGyroY_dps();
-    sensor_data.imu_1.gyro.z = -imu_icm42688.getGyroZ_dps();
+    if (imu_icm42688.readSensor() > 0) {
+        // !!! DIRECTION TUNED !!!
+        sensor_data.imu_1.acc.x  = -imu_icm42688.getAccelX_mss();
+        sensor_data.imu_1.acc.y  = -imu_icm42688.getAccelY_mss();
+        sensor_data.imu_1.acc.z  = -imu_icm42688.getAccelZ_mss();
+        sensor_data.imu_1.gyro.x = -imu_icm42688.getGyroX_dps();
+        sensor_data.imu_1.gyro.y = -imu_icm42688.getGyroY_dps();
+        sensor_data.imu_1.gyro.z = -imu_icm42688.getGyroZ_dps();
+    }
 
-    // for (size_t i = 0; i < 3; ++i) {
-    //     // Acc KF
-    //     filters.imu_1.acc.values[i] << sensor_data.imu_1.acc.values[i];
-    //     sensor_data.imu_1.acc.values[i] = filters.imu_1.acc.values[i].x();
-    //     // Gyro KF
-    //     filters.imu_1.gyro.values[i] << sensor_data.imu_1.gyro.values[i];
-    //     sensor_data.imu_1.gyro.values[i] = filters.imu_1.gyro.values[i].x();
-    // }
+    for (size_t i = 0; i < 3; ++i) {
+        const uint32_t dt = millis() - t_prev;
+        filters.imu_1.acc.values[i].update_dt(dt);
+        filters.imu_1.gyro.values[i].update_dt(dt);
+
+        filters.imu_1.acc.values[i].kf.predict().update(sensor_data.imu_1.acc.values[i]);
+        filters.imu_1.gyro.values[i].kf.predict().update(sensor_data.imu_1.gyro.values[i]);
+
+        sensor_data.imu_1.acc.values[i]  = filters.imu_1.acc.values[i].kf.state;
+        sensor_data.imu_1.gyro.values[i] = filters.imu_1.gyro.values[i].kf.state;
+    }
+
+    t_prev = millis();
 }
 
 void accept_command(HardwareSerial *istream) {
@@ -621,6 +647,7 @@ void accept_command(HardwareSerial *istream) {
 
     if (command == "ping" || command == "wake" || command == "on") {
         // <--- Maybe a wakeup command --->
+
     } else if (command == "arm") {
         // <--- Arming the rocket --->
         sensor_data.ps = luna::state_t::ARMED;
@@ -640,21 +667,25 @@ void accept_command(HardwareSerial *istream) {
             tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
             log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
         }
+
     } else if (command == "manual-trigger-a") {
         if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
             gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A);
             sensor_data.pyro_a = luna::pyro_state_t::FIRING;
         }
+
     } else if (command == "manual-trigger-b") {
         if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
             gpio_write << io_function::pull_high(luna::pins::pyro::SIG_B);
             sensor_data.pyro_b = luna::pyro_state_t::FIRING;
         }
+
     } else if (command == "manual-trigger-c") {
         if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
             gpio_write << io_function::pull_high(luna::pins::pyro::SIG_C);
             sensor_data.pyro_c = luna::pyro_state_t::FIRING;
         }
+
     } else if (command == "launch-override") {
         launch_override = true;
 
@@ -670,10 +701,15 @@ void accept_command(HardwareSerial *istream) {
 
     } else if (command == "sleep") {
         // <--- Put the device into deep sleep mode (power saving) --->
+        luna::pins::PINS_OFF();
+        luna::pins::SET_LED(luna::BLUE);
         LowPower.deepSleep();
 
     } else if (command == "shutdown") {
         // <--- Shutdown the device --->
+        luna::pins::PINS_OFF();
+        luna::pins::SET_LED(luna::RED);
+
         LowPower.deepSleep();
         if (pvalid.sd) {
             sd_util.close_one();
@@ -712,6 +748,7 @@ void construct_data() {
             << sensor_data.timestamp
             << sensor_data.timestamp_us
             << millis()
+            << sensor_data.tx_pc++
             << luna::state_string(sensor_data.ps)
 
             << String(sensor_data.gps_lat, 6)
@@ -765,7 +802,6 @@ void save_data(time_type *interval_ms) {
     }
 
     sd([&]() -> void {
-        // todo: Change later
         sd_util.file() << tx_data;
     });
 
@@ -809,6 +845,7 @@ void fsm_eval() {
             // !!!!! Next: DETECT launch !!!!!
             buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_PAD_PREOP_INTERVAL);
 
+            // todo: finish state
             static on_off_timer tim(luna::config::alg::LAUNCH_TON, luna::config::alg::LAUNCH_TOFF, millis);
 
             if (!state_satisfaction) {
@@ -991,34 +1028,11 @@ void fsm_eval() {
     }
 }
 
-void buzzer_control(on_off_timer::interval_params *intervals_ms) {
+void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
     // Interval change keeper
     static time_type prev_on  = intervals_ms->t_on;
     static time_type prev_off = intervals_ms->t_off;
 
-    // On-off timer
-    static on_off_timer timer(intervals_ms->t_on, intervals_ms->t_off, millis);
-
-    if (prev_on != intervals_ms->t_on || prev_off != intervals_ms->t_off) {
-        timer.set_interval_on(intervals_ms->t_on);
-        timer.set_interval_off(intervals_ms->t_off);
-        prev_on  = intervals_ms->t_on;
-        prev_off = intervals_ms->t_off;
-    }
-
-    timer.on_rising([&]() -> void {
-        gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
-    });
-
-    timer.on_falling([&]() -> void {
-        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-    });
-}
-
-void led_control(on_off_timer::interval_params *intervals_ms) {
-    // Interval change keeper
-    static time_type prev_on  = intervals_ms->t_on;
-    static time_type prev_off = intervals_ms->t_off;
     static struct {
         int value = 0;
     } onboard_led;
@@ -1063,15 +1077,13 @@ void led_control(on_off_timer::interval_params *intervals_ms) {
                 break;
         }
 
-        gpio_write << io_function::set(luna::pins::gpio::LED_R, BITS_AT(onboard_led.value, 2));
-        gpio_write << io_function::set(luna::pins::gpio::LED_G, BITS_AT(onboard_led.value, 1));
-        gpio_write << io_function::set(luna::pins::gpio::LED_B, BITS_AT(onboard_led.value, 0));
+        gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+        luna::pins::SET_LED(onboard_led.value);
     });
 
     timer.on_falling([&]() -> void {
-        gpio_write << io_function::pull_low(luna::pins::gpio::LED_R);
-        gpio_write << io_function::pull_low(luna::pins::gpio::LED_G);
-        gpio_write << io_function::pull_low(luna::pins::gpio::LED_B);
+        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+        luna::pins::SET_LED(luna::BLACK);
     });
 }
 
@@ -1100,8 +1112,8 @@ void future_manual_trigger() {
 
     if (meas && prev) {
         sd1([&]() -> void {
-            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A);
-            gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A)
+                       << io_function::pull_high(luna::pins::gpio::BUZZER);
             delay(1000);
         }).otherwise([&]() -> void {
             sd2([&]() -> void {
@@ -1112,8 +1124,8 @@ void future_manual_trigger() {
             });
         });
     } else {
-        gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A);
-        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+        gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A)
+                   << io_function::pull_low(luna::pins::gpio::BUZZER);
         sd1.reset();
         sd2.reset();
     }
