@@ -267,6 +267,10 @@ namespace algorithm {
         [[nodiscard]] constexpr bool vote() const {
             return vote_sample<TrueRatio, FalseRatio, Strict>(true_count, false_count);
         }
+
+        [[nodiscard]] constexpr size_t count() const {
+            return true_count + false_count;
+        }
     };
 }  // namespace algorithm
 

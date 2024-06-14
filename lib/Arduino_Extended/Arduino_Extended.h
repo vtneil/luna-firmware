@@ -313,4 +313,8 @@ constexpr uint8_t *byte_cast(void *ptr) {
 
 inline __attribute__((__always_inline__)) void do_nothing() {}
 
+#include "smart_delay.h"
+#include "tasks.h"
+#include "avionics_algorithm.h"
+
 #endif  //ARDUINO_EXTENDED_H

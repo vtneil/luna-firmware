@@ -24,11 +24,16 @@ namespace luna::config {
     constexpr uint32_t TIME_TO_BURNOUT_MAX = 6 * 1000ul;
 
     namespace alg {
-        constexpr uint32_t LAUNCH_TON  = 100ul;   // 100 ms
-        constexpr uint32_t LAUNCH_TOFF = 50ul;    // 50 ms
-        constexpr double LAUNCH_ACC    = 50.0;    // m/s^2
-        constexpr double APOGEE_VEL    = 10.0;    // m/s
-        constexpr float MAIN_ALTITUDE  = 600.0f;  // m
+        constexpr uint32_t LAUNCH_TON          = 100ul;          // 100 ms
+        constexpr uint32_t BURNOUT_TON         = 500ul;          // 500 ms
+        constexpr uint32_t APOGEE_SLOW_TON     = 1000ul;         // 2000 ms
+        constexpr uint32_t MAIN_DEPLOYMENT_TON = 200ul;          // 200 ms
+        constexpr uint32_t LANDING_TON         = 5000ul;         // 200 ms
+
+        constexpr double LAUNCH_ACC            = 10.0;           // 25 m/s^2
+
+        constexpr double APOGEE_VEL            = 10.0;           // m/s
+        constexpr double MAIN_ALTITUDE         = 500.f + 100.f;  // m
     }  // namespace alg
 
     constexpr unsigned long RFD900X_BAUD         = 460800;
@@ -39,9 +44,9 @@ namespace luna::config {
 
     constexpr uint32_t TX_IDLE_INTERVAL          = HZ_TO_INTERVAL_MS(1);  // 1 Hz
     constexpr uint32_t TX_ARMED_INTERVAL         = HZ_TO_INTERVAL_MS(2);  // 2 Hz
-    constexpr uint32_t TX_PAD_PREOP_INTERVAL     = HZ_TO_INTERVAL_MS(4);  // 5 Hz
+    constexpr uint32_t TX_PAD_PREOP_INTERVAL     = HZ_TO_INTERVAL_MS(4);  // 4 Hz
     constexpr uint32_t TX_ASCEND_INTERVAL        = HZ_TO_INTERVAL_MS(5);  // 5 Hz
-    constexpr uint32_t TX_DESCEND_INTERVAL       = HZ_TO_INTERVAL_MS(4);  // 5 Hz
+    constexpr uint32_t TX_DESCEND_INTERVAL       = HZ_TO_INTERVAL_MS(4);  // 4 Hz
 
     constexpr uint32_t LOG_IDLE_INTERVAL         = HZ_TO_INTERVAL_MS(1);   // 1 Hz
     constexpr uint32_t LOG_ARMED_INTERVAL        = HZ_TO_INTERVAL_MS(2);   // 2 Hz
