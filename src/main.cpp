@@ -133,7 +133,6 @@ on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL,
 
 // Hardware references
 
-// USBSerial &UART_USB          = Serial;
 HardwareSerial &USB_DEBUG    = Serial4;
 HardwareSerial &UART_LORA    = Serial2;
 HardwareSerial &UART_RFD900X = Serial4;
@@ -276,10 +275,8 @@ void setup() {
 
     // UART Interfaces
 
-    // UART_USB.begin(UART_BAUD);
     UART_LORA.begin(luna::config::UART_BAUD);
     UART_RFD900X.begin(luna::config::RFD900X_BAUD);
-    USB_DEBUG << "UART Hello!" << stream::crlf;
 
     // SPI Mode
     SPI_3.setDataMode(SPI_MODE0);
@@ -709,10 +706,6 @@ void accept_command(HardwareSerial *istream) {
     while (stream.available()) {
         rx_message += static_cast<char>(stream.read());
     }
-
-    // Debug echo back
-    // stream.print("Received: ");
-    // stream.println(rx_message);
 
     // Repeats for at least 5 times before continuing
     if (rx_message.substring(0, 4) != "cmd ") {
@@ -1305,34 +1298,4 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
         gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
         luna::pins::SET_LED(luna::BLACK);
     });
-}
-
-void future_manual_trigger() {
-    static smart_delay sd1(5000ul, millis);
-    static smart_delay sd2(1000ul, millis);
-
-    static int prev = gpio_read.sample<32>(luna::pins::gpio::USER_1);
-    const int meas  = gpio_read.sample<32>(luna::pins::gpio::USER_1);
-
-    if (meas && prev) {
-        sd1([&]() -> void {
-            gpio_write << io_function::pull_high(luna::pins::pyro::SIG_A)
-                       << io_function::pull_high(luna::pins::gpio::BUZZER);
-            delay(1000);
-        }).otherwise([&]() -> void {
-            sd2([&]() -> void {
-                gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
-                delay(50);
-            }).otherwise([&]() -> void {
-                gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-            });
-        });
-    } else {
-        gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A)
-                   << io_function::pull_low(luna::pins::gpio::BUZZER);
-        sd1.reset();
-        sd2.reset();
-    }
-
-    prev = meas;
 }
