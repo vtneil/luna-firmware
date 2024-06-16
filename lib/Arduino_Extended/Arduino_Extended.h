@@ -166,13 +166,16 @@ namespace io_function {
         constexpr explicit set(const PinName pin, const uint32_t val) : m_pin{pin}, m_val{val} {}
     };
 
+    struct pwm : detail::IOFunction {
+        uint32_t m_pin;
+        uint32_t m_val;
+
+        explicit pwm(const PinName pin, const uint32_t val)
+            : m_pin{to_digital(pin)},
+              m_val{val} {}
+    };
+
 }  // namespace io_function
-
-struct analog_pin {
-    const PinName pin;
-
-    explicit constexpr analog_pin(const PinName pin) : pin{pin} {}
-};
 
 namespace detail {
     struct SampleStatus {
@@ -194,6 +197,8 @@ namespace detail {
                 digitalToggleFast(func.m_pin);
             } else if constexpr (std::is_same_v<IoFuncType, io_function::set>) {
                 digitalWriteFast(func.m_pin, func.m_val);
+            } else if constexpr (std::is_same_v<IoFuncType, io_function::pwm>) {
+                analogWrite(func.m_pin, func.m_val);
             }
             return *this;
         }
