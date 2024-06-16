@@ -2,7 +2,7 @@
  * @file main.cpp
  * @author Vivatsathorn Thitasirivit
  * @date 13 May 2024
- * @brief LUNA Firmware (Stella Variant)
+ * @brief LUNA Firmware
  */
 
 #include <Arduino.h>
@@ -290,49 +290,6 @@ void setup() {
     SPI_3.begin();
     SPI_4.begin();
 
-
-#if defined(HW_FORMAT_CARD)
-    auto s1 = sd_util.fmt_new_card(sd_config);
-    UART_RFD900X << s1 << "\n";
-
-    if (s1)
-        while (true)
-            ;
-    auto s2 = sd_util.fmt_erase_card();
-    UART_RFD900X << s2 << "\n";
-    if (s2)
-        while (true)
-            ;
-
-    auto s3 = sd_util.fmt_format_card(UART_RFD900X);
-    UART_RFD900X << s3 << "\n";
-    if (s3)
-        while (true)
-            ;
-
-    s1 = flash_util.fmt_new_card(flash_config);
-    UART_RFD900X << s1 << "\n";
-
-    if (s1)
-        while (true)
-            ;
-    s2 = flash_util.fmt_erase_card();
-    UART_RFD900X << s2 << "\n";
-    if (s2)
-        while (true)
-            ;
-
-    s3 = flash_util.fmt_format_card(UART_RFD900X);
-    UART_RFD900X << s3 << "\n";
-    if (s3)
-        while (true)
-            ;
-
-    while (true)
-        ;
-
-#endif
-
     // I2C (Wire) Interfaces
     Wire1.setClock(400000);
     Wire1.begin();
@@ -415,58 +372,9 @@ void setup() {
         gnss_m9v.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
     }
 
-    auto pyro_cutoff = [] {
-        static smart_delay sd_a(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
-        static smart_delay sd_b(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
-        static smart_delay sd_c(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
-        static bool flag_a = false;
-        static bool flag_b = false;
-        static bool flag_c = false;
-
-        if (sensor_data.pyro_a == luna::pyro_state_t::FIRING) {
-            if (!flag_a) {
-                sd_a.reset();
-                flag_a = true;
-            } else {
-                sd_a([] {
-                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A);
-                    sensor_data.pyro_a = luna::pyro_state_t::FIRED;
-                    flag_a             = false;
-                });
-            }
-        }
-
-        if (sensor_data.pyro_b == luna::pyro_state_t::FIRING) {
-            if (!flag_b) {
-                sd_b.reset();
-                flag_b = true;
-            } else {
-                sd_b([] {
-                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_B);
-                    sensor_data.pyro_b = luna::pyro_state_t::FIRED;
-                    flag_b             = false;
-                });
-            }
-        }
-
-        if (sensor_data.pyro_c == luna::pyro_state_t::FIRING) {
-            if (!flag_c) {
-                sd_c.reset();
-                flag_c = true;
-            } else {
-                sd_c([] {
-                    gpio_write << io_function::pull_low(luna::pins::pyro::SIG_C);
-                    sensor_data.pyro_c = luna::pyro_state_t::FIRED;
-                    flag_c             = false;
-                });
-            }
-        }
-    };
-
     // Task initialization
     dispatcher << task_type(read_continuity, 500ul, micros, 0)
                << task_type(buzzer_led_control, &buzzer_intervals, 0)  // Adaptive
-               << task_type(pyro_cutoff, 100, millis, 0)
 
                << task_type(calculate_ground_truth, 0)
                << task_type(fsm_eval, 25ul, millis, 0)
