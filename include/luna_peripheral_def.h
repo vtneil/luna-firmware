@@ -11,6 +11,10 @@ namespace luna::config {
         return static_cast<uint32_t>(1000. / FREQUENCY_HZ);
     };
 
+    constexpr auto INTERVAL_MS_TO_HZ = [](const uint32_t INTERVAL) -> uint32_t {
+        return 1000 / INTERVAL;
+    };
+
     constexpr uint8_t INA236_ADDRESS = 0x40;
 
     enum INA236ADCRange {

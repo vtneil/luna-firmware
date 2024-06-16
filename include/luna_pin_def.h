@@ -4,6 +4,19 @@
 #include <PinNames.h>
 #include <Arduino_Extended.h>
 
+namespace luna {
+    enum RGB_MASK {
+        BLACK = 0b000,
+        BLUE,
+        GREEN,
+        CYAN,
+        RED,
+        MAGENTA,
+        YELLOW,
+        WHITE
+    };
+}
+
 namespace luna::pins {
     namespace power {
         constexpr PinName PIN_24V = PB_12;
@@ -29,12 +42,12 @@ namespace luna::pins {
     }  // namespace pyro
 
     namespace comm {
-        namespace rfd900x {
+        namespace rpi {
             constexpr PinName CTS     = PB_14;
             constexpr PinName RTS     = PB_15;
             constexpr PinName UART_TX = PD_1;
             constexpr PinName UART_RX = PD_0;
-        }  // namespace rfd900x
+        }  // namespace rpi
 
         namespace lora {
             constexpr PinName AUX     = PF_3;
@@ -88,10 +101,10 @@ namespace luna::pins {
         constexpr PinName UART_RX = PC_7;
     }  // namespace tmc2209
 
-    constexpr auto SET_LED = [](const int v) {
-        gpio_write << io_function::set(gpio::LED_R, BITS_AT(v, 2))
-                   << io_function::set(gpio::LED_G, BITS_AT(v, 1))
-                   << io_function::set(gpio::LED_B, BITS_AT(v, 0));
+    constexpr auto SET_LED = [](const int color) {
+        gpio_write << io_function::set(gpio::LED_R, BITS_AT(color, 2))
+                   << io_function::set(gpio::LED_G, BITS_AT(color, 1))
+                   << io_function::set(gpio::LED_B, BITS_AT(color, 0));
     };
 
     constexpr auto PINS_OFF = [] {
@@ -106,19 +119,130 @@ namespace luna::pins {
 
     constexpr auto PINS_RESTORE = [] {
     };
-}  // namespace luna::pins
 
-namespace luna {
-    enum RGB_MASK {
-        BLACK = 0b000,
-        BLUE,
-        GREEN,
-        CYAN,
-        RED,
-        MAGENTA,
-        YELLOW,
-        WHITE
+    class PwmLed {
+        HardwareTimer &timer_led;
+        HardwareTimer &timer_buz;
+
+        int num_colors       = 1;
+        RGB_MASK m_colors[3] = {BLACK, BLACK, BLACK};
+        uint32_t m_freq      = 1;
+        uint8_t m_color_i    = 0;
+        uint8_t pwm_val      = 0;
+        uint8_t m_min        = 0;
+        uint8_t m_max        = 255;
+        bool direction       = true;
+        bool m_buzzer        = false;
+
+    public:
+        explicit PwmLed(HardwareTimer &timer_led, HardwareTimer &timer_buz) : timer_led{timer_led}, timer_buz{timer_buz} {
+            analogWriteResolution(8);
+        }
+
+        [[nodiscard]] constexpr bool is_max() const {
+            return pwm_val == m_max;
+        }
+
+        [[nodiscard]] constexpr bool is_min() const {
+            return pwm_val == m_min;
+        }
+
+        void set_range(const uint8_t min, const uint8_t max) {
+            m_min = min;
+            m_max = max;
+        }
+
+        void set_color(const RGB_MASK color) {
+            m_color_i   = 0;
+            num_colors  = 1;
+            m_colors[0] = color;
+        }
+
+        void set_color(const RGB_MASK color1, const RGB_MASK color2) {
+            m_color_i   = 0;
+            num_colors  = 2;
+            m_colors[0] = color1;
+            m_colors[1] = color2;
+        }
+
+        void set_color(const RGB_MASK color1, const RGB_MASK color2, const RGB_MASK color3) {
+            m_color_i   = 0;
+            num_colors  = 3;
+            m_colors[0] = color1;
+            m_colors[1] = color2;
+            m_colors[2] = color3;
+        }
+
+        void set_buzzer(const bool enable) {
+            m_buzzer = enable;
+        }
+
+        void set_frequency(const uint32_t freq_hz) {
+            m_freq = freq_hz;
+        }
+
+        void pause() {
+            timer_led.pause();
+        }
+
+        void resume() {
+            timer_led.resume();
+        }
+
+        void disable() {
+            pause();
+            dout_low << gpio::LED_R
+                     << gpio::LED_G
+                     << gpio::LED_B;
+        }
+
+        void reset() {
+            disable();
+
+            direction = true;
+            pwm_val   = m_min;
+            m_color_i = 0;
+
+            timer_led.setOverflow((static_cast<uint32_t>(m_max - m_min) + 1) * m_freq * 2, HERTZ_FORMAT);
+
+            timer_led.attachInterrupt([&] {
+                if (direction)
+                    ++pwm_val;
+                else
+                    --pwm_val;
+                if (is_max()) {
+                    direction = false;
+                    if (m_buzzer) {
+                        gpio_write << io_function::pull_high(gpio::BUZZER);
+                        timer_buz.setCount(0);
+                        timer_buz.resume();
+                    }
+                } else if (is_min()) {
+                    direction = true;
+                    if (m_color_i < num_colors - 1) {
+                        ++m_color_i;
+                    } else {
+                        m_color_i = 0;
+                    }
+                    dout_low << gpio::LED_R
+                             << gpio::LED_G
+                             << gpio::LED_B;
+                }
+
+                const int color = m_colors[m_color_i];
+
+                if (BITS_AT(color, 2))
+                    gpio_write << io_function::pwm(gpio::LED_R, pwm_val);
+                if (BITS_AT(color, 1))
+                    gpio_write << io_function::pwm(gpio::LED_G, pwm_val);
+                if (BITS_AT(color, 0))
+                    gpio_write << io_function::pwm(gpio::LED_B, pwm_val);
+            });
+
+            resume();
+        }
     };
-}
+
+}  // namespace luna::pins
 
 #endif  //LUNA_FIRMWARE_LUNA_PIN_DEF_H

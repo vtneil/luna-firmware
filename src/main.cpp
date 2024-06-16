@@ -2,7 +2,7 @@
  * @file main.cpp
  * @author Vivatsathorn Thitasirivit
  * @date 13 May 2024
- * @brief LUNA Firmware
+ * @brief LUNA Firmware (Stella Variant)
  */
 
 #include <Arduino.h>
@@ -11,7 +11,6 @@
 #include "vt_linalg"
 #include "vt_kalman"
 #include <STM32LowPower.h>
-
 
 #include <Wire.h>
 #include <SPI.h>
@@ -104,7 +103,7 @@ struct ms_ref_t {
 // Hardware interfaces
 
 HardwareSerial Serial2(luna::pins::comm::lora::UART_RX, luna::pins::comm::lora::UART_TX);
-HardwareSerial Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
+HardwareSerial Serial4(luna::pins::comm::rpi::UART_RX, luna::pins::comm::rpi::UART_TX);
 
 TwoWire Wire1(to_digital(luna::pins::i2c::ch1::SDA),
               to_digital(luna::pins::i2c::ch1::SCL));
@@ -211,7 +210,9 @@ struct {
     luna::vec3_u<double> acc;
 } ground_truth;
 
-// HardwareTimer timer_led(TIM1);
+HardwareTimer timer_led(TIM2);
+HardwareTimer timer_buz(TIM3);
+luna::pins::PwmLed pwm_led(timer_led, timer_buz);
 
 template<typename SdType, typename FileType>
 extern void init_storage(FsUtil<SdType, FileType> &sd_util_instance);
@@ -254,14 +255,18 @@ void setup() {
              << luna::pins::pyro::SIG_C
              << luna::pins::power::PIN_24V;
 
-    // SCREW SWITCH DEBOUNCE WAIT
+    pwm_led.set_range(16, 255);
 
-    for (uint8_t i = 0; i < 32; ++i) {
-        luna::pins::SET_LED(i);
-        delay(80);
-    }
+    pwm_led.set_color(luna::YELLOW);
+    pwm_led.set_frequency(2);
+    pwm_led.reset();
 
-    luna::pins::SET_LED(luna::WHITE);
+    timer_buz.setOverflow(luna::config::BUZZER_ON_INTERVAL * 1000, MICROSEC_FORMAT);
+    timer_buz.attachInterrupt([] {
+        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
+        timer_buz.pause();
+    });
+    timer_buz.pause();
 
     // GPIO Configuration
 
@@ -386,12 +391,7 @@ void setup() {
     // IMU
     pvalid.imu_icm42688 = imu_icm42688.begin() == 1;
     if (pvalid.imu_icm42688) {
-        // DO NOT USE THIS: UNRELIABLE
-        // imu_icm42688.setAccelRange(ICM42688::ACCEL_RANGE_16G);
-        // imu_icm42688.setGyroRange(ICM42688::GYRO_RANGE_2000DPS);
-        // imu_icm42688.setFilters(true, true);
     }
-
 
     pvalid.imu_icm20948 = imu_icm20948.begin(to_digital(luna::pins::spi::cs::icm20948), SPI_4) == ICM_20948_Stat_Ok;
     if (pvalid.imu_icm20948) {
@@ -405,7 +405,6 @@ void setup() {
         imu_icm20948.enableDLPF(ICM_20948_Internal_Acc | ICM_20948_Internal_Gyr, true);
     }
 
-
     // GPS
     pvalid.gnss_m9v = gnss_m9v.begin(Wire1);
     if (pvalid.gnss_m9v) {
@@ -414,12 +413,6 @@ void setup() {
         gnss_m9v.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
         gnss_m9v.setAutoPVT(true, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
         gnss_m9v.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
-
-        // Dead reckoning
-        // ???
-
-        // Optional
-        // gnss_m9v.saveConfiguration(luna::config::UBLOX_CUSTOM_MAX_WAIT);
     }
 
     auto pyro_cutoff = [] {
@@ -521,6 +514,8 @@ void setup() {
             delay(250);
         };
 
+        pwm_led.disable();
+
         for (const uint8_t status: pvalid.arr) {
             if (status) {
                 blink_green();
@@ -536,7 +531,9 @@ void setup() {
     USB_DEBUG << "Init successful!" << stream::crlf;
 
     // Reset timers before starting
-    luna::pins::SET_LED(luna::BLACK);
+    pwm_led.set_frequency(luna::config::INTERVAL_MS_TO_HZ(luna::config::BUZZER_IDLE_INTERVAL));
+    pwm_led.reset();
+
     gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
     dispatcher.reset();
 }
@@ -817,22 +814,27 @@ void accept_command(HardwareSerial *istream) {
 
     } else if (command == "sleep") {
         // <--- Put the device into deep sleep mode (power saving) --->
+        pwm_led.disable();
         luna::pins::PINS_OFF();
         luna::pins::SET_LED(luna::BLUE);
         LowPower.deepSleep();
+        pwm_led.reset();
 
     } else if (command == "shutdown") {
         // <--- Shutdown the device --->
+        pwm_led.disable();
         luna::pins::PINS_OFF();
         luna::pins::SET_LED(luna::RED);
 
-        LowPower.deepSleep();
         if (pvalid.sd) {
             sd_util.close_one();
         }
         if (pvalid.flash) {
             flash_util.close_one();
         }
+
+        LowPower.deepSleep();
+
         __NVIC_SystemReset();
 
     } else if (command == "reboot" || command == "restart") {
@@ -1242,11 +1244,12 @@ void fsm_eval() {
 
 void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
     // Interval change keeper
-    static time_type prev_on  = intervals_ms->t_on;
-    static time_type prev_off = intervals_ms->t_off;
+    static time_type prev_on        = intervals_ms->t_on;
+    static time_type prev_off       = intervals_ms->t_off;
+    static luna::state_t prev_state = luna::state_t::STARTUP;
 
     static struct {
-        int value = 0;
+        luna::RGB_MASK value = luna::RGB_MASK::BLACK;
     } onboard_led;
 
     // On-off timer
@@ -1257,19 +1260,21 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
         timer.set_interval_off(intervals_ms->t_off);
         prev_on  = intervals_ms->t_on;
         prev_off = intervals_ms->t_off;
+
+        pwm_led.set_frequency(luna::config::INTERVAL_MS_TO_HZ(intervals_ms->t_on + intervals_ms->t_off));
+        pwm_led.reset();
     }
 
-    timer.on_rising([&]() -> void {
+    if (prev_state != sensor_data.ps) {
+        prev_state = sensor_data.ps;
+
         switch (sensor_data.ps) {
             case luna::state_t::IDLE_SAFE:
                 onboard_led.value = luna::RGB_MASK::GREEN;
                 break;
 
             case luna::state_t::ARMED:
-                if (onboard_led.value == luna::RGB_MASK::RED)
-                    onboard_led.value = luna::RGB_MASK::YELLOW;
-                else
-                    onboard_led.value = luna::RGB_MASK::RED;
+                onboard_led.value = luna::RGB_MASK::RED;
                 break;
 
             case luna::state_t::PAD_PREOP:
@@ -1289,13 +1294,16 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
                 break;
         }
 
-        if (sensor_data.ps != luna::state_t::PAD_PREOP)
-            gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
-        luna::pins::SET_LED(onboard_led.value);
-    });
-
-    timer.on_falling([&]() -> void {
-        gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-        luna::pins::SET_LED(luna::BLACK);
-    });
+        if (sensor_data.ps == luna::state_t::ARMED) {
+            pwm_led.set_color(onboard_led.value, luna::RGB_MASK::GREEN);
+        } else {
+            pwm_led.set_color(onboard_led.value);
+        }
+        if (sensor_data.ps == luna::state_t::PAD_PREOP) {
+            pwm_led.set_buzzer(false);
+        } else {
+            pwm_led.set_buzzer(true);
+        }
+        pwm_led.reset();
+    }
 }
