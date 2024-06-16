@@ -281,7 +281,6 @@ void setup() {
     UART_RFD900X.begin(luna::config::RFD900X_BAUD);
     USB_DEBUG << "UART Hello!" << stream::crlf;
 
-
     // SPI Mode
     SPI_3.setDataMode(SPI_MODE0);
 
@@ -539,11 +538,6 @@ void setup() {
     pvalid >> USB_DEBUG << stream::crlf;
     USB_DEBUG << "Init successful!" << stream::crlf;
 
-    // TEST OVERRIDE (REMOVE BEFORE FLIGHT)
-    // sensor_data.ps = luna::state_t::PAD_PREOP;
-    // tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
-    // log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
-
     // Reset timers before starting
     luna::pins::SET_LED(luna::BLACK);
     gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
@@ -798,8 +792,7 @@ void accept_command(HardwareSerial *istream) {
         sensor_mode.acceleration = 0b11;
 
     } else if (command == "launch-override") {
-        // Intentionally disabled
-        // launch_override = true;
+        launch_override = true;
 
     } else if (command == "recover") {
         // <--- Rocket landing confirmed --->
@@ -997,8 +990,6 @@ void fsm_eval() {
     const double vel_x = filters.altitude.kf.state_vector[1];
     const double acc   = filters.acceleration.kf.state_vector[2];
 
-    // const auto &z = filters.;
-
     switch (sensor_data.ps) {
         case luna::state_t::STARTUP: {
             // Next: always transfer
@@ -1013,6 +1004,13 @@ void fsm_eval() {
         case luna::state_t::ARMED: {
             // <--- Next: wait for uplink --->
             buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_ARMED_INTERVAL);
+
+            if (launch_override) {
+                sensor_data.ps = luna::state_t::PAD_PREOP;
+                tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
+                log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
+            }
+
             break;
         }
         case luna::state_t::PAD_PREOP: {
@@ -1298,7 +1296,8 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
                 break;
         }
 
-        gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
+        if (sensor_data.ps != luna::state_t::PAD_PREOP)
+            gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
         luna::pins::SET_LED(onboard_led.value);
     });
 

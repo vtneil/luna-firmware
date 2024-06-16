@@ -24,14 +24,12 @@ namespace luna::config {
     constexpr uint32_t TIME_TO_BURNOUT_MAX = 6 * 1000ul;
 
     namespace alg {
-        constexpr uint32_t LAUNCH_TON          = 100ul;          // 100 ms
+        constexpr uint32_t LAUNCH_TON          = 150ul;          // 150 ms
         constexpr uint32_t BURNOUT_TON         = 500ul;          // 500 ms
         constexpr uint32_t APOGEE_SLOW_TON     = 1000ul;         // 2000 ms
         constexpr uint32_t MAIN_DEPLOYMENT_TON = 200ul;          // 200 ms
         constexpr uint32_t LANDING_TON         = 5000ul;         // 200 ms
-
-        constexpr double LAUNCH_ACC            = 10.0;           // 25 m/s^2
-
+        constexpr double LAUNCH_ACC            = 40.0;           // 40 m/s^2
         constexpr double APOGEE_VEL            = 10.0;           // m/s
         constexpr double MAIN_ALTITUDE         = 500.f + 100.f;  // m
     }  // namespace alg
