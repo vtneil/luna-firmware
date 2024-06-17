@@ -129,6 +129,7 @@ SdSpiConfig sd_config(luna::pins::spi::cs::sd,
 
 on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL,
                                                luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
+bool enable_buzzer = true;
 
 // Hardware references
 
@@ -652,6 +653,11 @@ void accept_command(HardwareSerial *istream) {
             tx_interval    = luna::config::TX_PAD_PREOP_INTERVAL;
             log_interval   = luna::config::LOG_PAD_PREOP_INTERVAL;
         }
+
+    } else if (command == "shutup") {
+        enable_buzzer = !enable_buzzer;
+        pwm_led.set_buzzer(enable_buzzer);
+        pwm_led.reset();
 
     } else if (command == "manual-trigger-a") {
         if (sensor_data.ps != luna::state_t::IDLE_SAFE && sensor_data.ps != luna::state_t::RECOVERED_SAFE) {
@@ -1210,7 +1216,7 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
         if (sensor_data.ps == luna::state_t::PAD_PREOP) {
             pwm_led.set_buzzer(false);
         } else {
-            pwm_led.set_buzzer(true);
+            pwm_led.set_buzzer(enable_buzzer);
         }
         pwm_led.reset();
     }
