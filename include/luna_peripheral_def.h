@@ -5,7 +5,7 @@
 #include "luna_pin_def.h"
 
 namespace luna::config {
-    constexpr uint32_t PYRO_ACTIVATE_INTERVAL = 1000ul;
+    constexpr uint32_t PYRO_ACTIVATE_INTERVAL = 5000ul;
 
     constexpr auto HZ_TO_INTERVAL_MS          = [](const double FREQUENCY_HZ) -> uint32_t {
         return static_cast<uint32_t>(1000. / FREQUENCY_HZ);
