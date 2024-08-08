@@ -42,12 +42,17 @@ namespace luna::pins {
     }  // namespace pyro
 
     namespace comm {
-        namespace rpi {
+        namespace raspi {
+            constexpr PinName UART_TX = PE_8;
+            constexpr PinName UART_RX = PE_7;
+        }  // namespace raspi
+
+        namespace rfd900x {
             constexpr PinName CTS     = PB_14;
             constexpr PinName RTS     = PB_15;
             constexpr PinName UART_TX = PD_1;
             constexpr PinName UART_RX = PD_0;
-        }  // namespace rpi
+        }  // namespace rfd900x
 
         namespace lora {
             constexpr PinName AUX     = PF_3;
@@ -100,6 +105,11 @@ namespace luna::pins {
         constexpr PinName UART_TX = PC_6;
         constexpr PinName UART_RX = PC_7;
     }  // namespace tmc2209
+
+    namespace geiger {
+        constexpr PinName ANALOG_READ  = PB_11;
+        constexpr PinName DIGITAL_READ = PB_10;
+    }  // namespace geiger
 
     constexpr auto SET_LED = [](const int color) {
         gpio_write << io_function::set(gpio::LED_R, BITS_AT(color, 2))

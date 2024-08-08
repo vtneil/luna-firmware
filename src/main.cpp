@@ -25,7 +25,8 @@
 #include "luna_pin_def.h"
 #include "luna_state_def.h"
 #include "luna_peripheral_def.h"
-#include "message.h"
+#include "luna_message.h"
+#include "luna_protocol.h"
 
 // Device specific
 #define THIS_DEVICE_ID      (0)
@@ -103,7 +104,8 @@ struct ms_ref_t {
 // Hardware interfaces
 
 HardwareSerial Serial2(luna::pins::comm::lora::UART_RX, luna::pins::comm::lora::UART_TX);
-HardwareSerial Serial4(luna::pins::comm::rpi::UART_RX, luna::pins::comm::rpi::UART_TX);
+HardwareSerial Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
+HardwareSerial Serial7(luna::pins::comm::raspi::UART_RX, luna::pins::comm::raspi::UART_TX);
 
 TwoWire Wire1(to_digital(luna::pins::i2c::ch1::SDA),
               to_digital(luna::pins::i2c::ch1::SCL));
@@ -134,7 +136,7 @@ bool enable_buzzer = true;
 // Hardware references
 
 HardwareSerial &USB_DEBUG    = Serial4;
-HardwareSerial &UART_LORA    = Serial2;
+HardwareSerial &UART_RPI     = Serial7;
 HardwareSerial &UART_RFD900X = Serial4;
 
 // Software data
@@ -164,8 +166,6 @@ String sd_data;
 time_type tx_interval  = luna::config::TX_IDLE_INTERVAL;
 time_type log_interval = luna::config::LOG_IDLE_INTERVAL;
 
-bool comm_test_flag    = false;
-
 // Peripherals
 
 peripherals_t pvalid;
@@ -182,6 +182,9 @@ MS5611_SPI ms2(to_digital(luna::pins::spi::cs::ms2), &SPI_4);
 
 ms_ref_t ms1_ref = {ms1, sensor_data.ms1_temp, sensor_data.ms1_pres, sensor_data.ms1_alt, filters.ms1_pres};
 ms_ref_t ms2_ref = {ms2, sensor_data.ms2_temp, sensor_data.ms2_pres, sensor_data.ms2_alt, filters.ms2_pres};
+
+luna::proto::raspi_cam cam(UART_RPI);
+uint8_t cam_state = 0;
 
 // Software control
 dispatcher_type<32> dispatcher;
@@ -246,7 +249,33 @@ extern void fsm_eval();
 
 extern void buzzer_led_control(on_off_timer::interval_params *intervals_ms);
 
+extern void raspi_cam_uart_daemon();
+
+extern void fn1();
+
+[[noreturn]] void mini() {
+    // Geiger counter setup
+    pinMode(luna::pins::geiger::DIGITAL_READ, INPUT);
+    pinMode(luna::pins::geiger::ANALOG_READ, INPUT_ANALOG);
+    analogReadResolution(16);
+
+
+    auto geiger_callback = [&] {
+        volatile auto x = analogRead(luna::pins::geiger::ANALOG_READ);
+        // todo: try print this
+    };
+
+    attachInterrupt(to_digital(luna::pins::geiger::DIGITAL_READ),
+                    geiger_callback, RISING);
+
+    // Pause
+    while (true)
+        ;
+}
+
 void setup() {
+    mini();
+
     // GPIO and Digital Pins
     dout_low << luna::pins::gpio::LED_R
              << luna::pins::gpio::LED_G
@@ -257,7 +286,6 @@ void setup() {
              << luna::pins::power::PIN_24V;
 
     pwm_led.set_range(16, 255);
-
     pwm_led.set_color(luna::YELLOW);
     pwm_led.set_frequency(2);
     pwm_led.reset();
@@ -281,7 +309,7 @@ void setup() {
 
     // UART Interfaces
 
-    UART_LORA.begin(luna::config::UART_BAUD);
+    UART_RPI.begin(luna::config::RPI_BAUD);
     UART_RFD900X.begin(luna::config::RFD900X_BAUD);
 
     // SPI Mode
@@ -294,7 +322,6 @@ void setup() {
     // I2C (Wire) Interfaces
     Wire1.setClock(400000);
     Wire1.begin();
-
 
     // I2C Debug
     i2c_detect(USB_DEBUG, Wire1, 0, 127);
@@ -318,7 +345,6 @@ void setup() {
     if (pvalid.ina236) {
         ina236.setADCRange(luna::config::INA236ADCRange::RANGE_80MV);
     }
-
 
     // Barometer and temperature
     pvalid.ms1 = ms1.begin();
@@ -815,8 +841,18 @@ void accept_command(HardwareSerial *istream) {
         sensor_data.last_ack  = 0;
         sensor_data.last_nack = 0;
 
-    } else if (command == "comm-test") {
-        comm_test_flag = true;
+    } else if (command == "cam-ping") {
+        cam.ping();
+
+    } else if (command == "cam-start") {
+        cam.start_video();
+
+    } else if (command == "cam-stop") {
+        cam.stop_video();
+
+    } else if (command == "cam-query") {
+        cam.get_status();
+
     } else {
         // <--- Unknown command: send back nack --->
         ++sensor_data.last_nack;
@@ -826,83 +862,40 @@ void accept_command(HardwareSerial *istream) {
 
 void construct_data() {
     tx_data = "";
-    if (!comm_test_flag) [[likely]] {
-        csv_stream_crlf(tx_data)
-                << "<45>"
-                << sensor_data.timestamp
-                << sensor_data.timestamp_us
-                << millis()
-                << sensor_data.tx_pc++
-                << luna::state_string(sensor_data.ps)
-                << sensor_mode_string(sensor_mode.pressure)
-                << sensor_mode_string(sensor_mode.acceleration)
+    csv_stream_crlf(tx_data)
+            << "<45>"
+            << sensor_data.timestamp
+            << sensor_data.timestamp_us
+            << millis()
+            << sensor_data.tx_pc++
+            << luna::state_string(sensor_data.ps)
+            << sensor_mode_string(sensor_mode.pressure)
+            << sensor_mode_string(sensor_mode.acceleration)
 
-                << String(sensor_data.gps_lat, 6)
-                << String(sensor_data.gps_lon, 6)
-                << String(ground_truth.altitude, 4)
+            << String(sensor_data.gps_lat, 6)
+            << String(sensor_data.gps_lon, 6)
+            << String(ground_truth.altitude, 4)
 
-                << luna::pyro_state_string(sensor_data.pyro_a)
-                << luna::pyro_state_string(sensor_data.pyro_b)
-                << luna::pyro_state_string(sensor_data.pyro_c)
-                << sensor_data.cont_a
-                << sensor_data.cont_b
-                << sensor_data.cont_c
+            << luna::pyro_state_string(sensor_data.pyro_a)
+            << luna::pyro_state_string(sensor_data.pyro_b)
+            << luna::pyro_state_string(sensor_data.pyro_c)
+            << sensor_data.cont_a
+            << sensor_data.cont_b
+            << sensor_data.cont_c
 
-                << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-                << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
+            << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
+            << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
 
-                << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-                << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
+            << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
+            << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
 
-                << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
-                << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
+            << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
+            << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
 
-                << sensor_data.cpu_temp
-                << sensor_data.batt_v
-                << sensor_data.last_ack
-                << sensor_data.last_nack;
-    } else [[unlikely]] {
-        csv_stream_crlf(tx_data)
-                << "<45>"
-                << sensor_data.timestamp
-                << sensor_data.timestamp_us
-                << "dsfhsdkgd222^#*(%#"
-                << millis()
-                << sensor_data.tx_pc++
-                << luna::state_string(sensor_data.ps)
-                << sensor_mode_string(sensor_mode.pressure)
-                << sensor_mode_string(sensor_mode.acceleration)
-
-                << String(sensor_data.gps_lat, 6)
-                << String(sensor_data.gps_lon, 6)
-
-                << "sdfsdfsdfs"
-
-                << luna::pyro_state_string(sensor_data.pyro_a)
-                << luna::pyro_state_string(sensor_data.pyro_a)
-                << String(ground_truth.altitude, 4)
-                << "Hello"
-
-                << luna::pyro_state_string(sensor_data.pyro_b)
-                << luna::pyro_state_string(sensor_data.pyro_c)
-                << sensor_data.cont_a
-                << sensor_data.cont_b
-                << sensor_data.cont_c
-
-                << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
-                << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
-
-                << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-                << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
-
-                << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
-                << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
-
-                << sensor_data.cpu_temp
-                << sensor_data.batt_v
-                << sensor_data.last_ack
-                << sensor_data.last_nack;
-    }
+            << sensor_data.cpu_temp
+            << sensor_data.batt_v
+            << sensor_data.last_ack
+            << sensor_data.last_nack;
 }
 
 void transmit_data(time_type *interval_ms) {
@@ -916,7 +909,6 @@ void transmit_data(time_type *interval_ms) {
 
     sd([&]() -> void {
         UART_RFD900X << tx_data;
-        comm_test_flag = false;
     });
 }
 
@@ -1262,11 +1254,43 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
         } else {
             pwm_led.set_color(onboard_led.value);
         }
+
         if (sensor_data.ps == luna::state_t::PAD_PREOP) {
             pwm_led.set_buzzer(false);
         } else {
             pwm_led.set_buzzer(enable_buzzer);
         }
+
         pwm_led.reset();
     }
+}
+
+void raspi_cam_uart_daemon() {
+    // On-off timer
+    static on_off_timer timer(1000ul, 500ul, millis);
+
+    // Rising:  Query Action
+    timer.on_rising([&] {
+        cam.get_status();
+    });
+
+    // Falling: Get from buffer
+    timer.on_falling([&] {
+        const uint8_t rx_v = cam.wait(0);
+
+        if (rx_v != luna::proto::INVALID) {
+            if (cam_state == luna::proto::STAT_RECORDING &&
+                rx_v != luna::proto::STAT_RECORDING) {
+                cam.start_video();
+            } else if (cam_state == luna::proto::STAT_STANDBY &&
+                       rx_v != luna::proto::STAT_STANDBY) {
+                cam.stop_video();
+            } else {
+                cam.set_status(rx_v);
+            }
+        }
+    });
+}
+
+void fn1() {
 }
