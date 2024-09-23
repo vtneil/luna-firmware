@@ -5,9 +5,9 @@
 - ✅ Correct CPU Clock
 - ✅ MS5611 MS1 SPI
 - ✅ MS5611 MS2 SPI
-- ❌ GNSS M9V I2C
-- ❌ IMU ICM20948 SPI
-- ❌ IMU ICM42688 SPI
+- ✅ GNSS M9V I2C
+- ✅ IMU ICM20948 SPI
+- ✅ IMU ICM42688 SPI
 - ✅ Core Temp ADC
 - ✅ SPI SD Card
 - ❌ SPI Flash
