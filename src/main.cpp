@@ -260,7 +260,6 @@ extern void fn1();
   pinMode(luna::pins::geiger::ANALOG_READ, INPUT_ANALOG);
   analogReadResolution(16);
 
-
   auto geiger_callback = [&] {
     volatile auto x = analogRead(luna::pins::geiger::ANALOG_READ);
     // todo: try print this
