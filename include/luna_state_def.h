@@ -14,7 +14,8 @@ namespace luna {
         MAIN_DEPLOY,
         MAIN_DESCEND,
         LANDED,
-        RECOVERED_SAFE
+        RECOVERED_SAFE,
+        LOG_ONLY
     };
 
     inline const char *state_string(const state_t state) {
@@ -43,6 +44,8 @@ namespace luna {
                 return "LANDED";
             case state_t::RECOVERED_SAFE:
                 return "REC_SAFE";
+            case state_t::LOG_ONLY:
+                return "LOG_ONLY";
             default:
                 __builtin_unreachable();
         }

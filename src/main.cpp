@@ -5,12 +5,16 @@
  * @brief LUNA Firmware
  */
 
-#include <Arduino.h>
-#include "Arduino_Extended.h"
-#include "File_Utility.h"
+#include "lib_xcore"
 #include "vt_linalg"
 #include "vt_kalman"
+#include "avionics_algorithm.h"
+
+#include "Arduino_Extended.h"
+#include "File_Utility.h"
+#include "freertos_wrapper.h"
 #include <STM32LowPower.h>
+#include <STM32RTC.h>
 
 #include <Wire.h>
 #include <SPI.h>
@@ -37,13 +41,9 @@
 
 // Type aliases
 
-using time_type    = uint32_t;
-using smart_delay  = vt::smart_delay<time_type>;
-using on_off_timer = vt::on_off_timer<time_type>;
-using task_type    = vt::task_t<vt::smart_delay, time_type>;
-
-template<size_t N>
-using dispatcher_type         = vt::task_dispatcher<N, vt::smart_delay, time_type>;
+using time_type               = uint32_t;
+using smart_delay             = xcore::nonblocking_delay<time_type>;
+using on_off_timer            = xcore::on_off_timer<time_type>;
 
 using sd_sd_t                 = SdExFat;
 using sd_file_t               = ExFile;
@@ -101,33 +101,41 @@ struct ms_ref_t {
       : ms{t_ms}, temp{t_temp}, pres{t_pres}, alt{t_alt}, kf{t_kf} {}
 };
 
-// Hardware interfaces
+// Serial
 
-HardwareSerial                Serial2(luna::pins::comm::lora::UART_RX, luna::pins::comm::lora::UART_TX);
-HardwareSerial                Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
-HardwareSerial                Serial7(luna::pins::comm::raspi::UART_RX, luna::pins::comm::raspi::UART_TX);
+HardwareSerial Serial2(luna::pins::comm::lora::UART_RX, luna::pins::comm::lora::UART_TX);
+HardwareSerial Serial4(luna::pins::comm::rfd900x::UART_RX, luna::pins::comm::rfd900x::UART_TX);
+HardwareSerial Serial7(luna::pins::comm::raspi::UART_RX, luna::pins::comm::raspi::UART_TX);
 
-TwoWire                       Wire1(to_digital(luna::pins::i2c::ch1::SDA),
-                                    to_digital(luna::pins::i2c::ch1::SCL));
+// I2C
 
-SPIClass                      SPI_1(to_digital(luna::pins::spi::ch1::MOSI),
-                                    to_digital(luna::pins::spi::ch1::MISO),
-                                    to_digital(luna::pins::spi::ch1::SCK));
-SPIClass                      SPI_3(to_digital(luna::pins::spi::ch3::MOSI),
-                                    to_digital(luna::pins::spi::ch3::MISO),
-                                    to_digital(luna::pins::spi::ch3::SCK));
-SPIClass                      SPI_4(to_digital(luna::pins::spi::ch4::MOSI),
-                                    to_digital(luna::pins::spi::ch4::MISO),
-                                    to_digital(luna::pins::spi::ch4::SCK));
+TwoWire Wire1(to_digital(luna::pins::i2c::ch1::SDA),
+              to_digital(luna::pins::i2c::ch1::SCL));
 
-SdSpiConfig                   flash_config(luna::pins::spi::cs::flash,
-                                           SHARED_SPI,
-                                           SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                           &SPI_3);
-SdSpiConfig                   sd_config(luna::pins::spi::cs::sd,
-                                        SHARED_SPI,
-                                        SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
-                                        &SPI_3);
+// SPI
+
+SPIClass SPI_1(to_digital(luna::pins::spi::ch1::MOSI),
+               to_digital(luna::pins::spi::ch1::MISO),
+               to_digital(luna::pins::spi::ch1::SCK));
+SPIClass SPI_3(to_digital(luna::pins::spi::ch3::MOSI),
+               to_digital(luna::pins::spi::ch3::MISO),
+               to_digital(luna::pins::spi::ch3::SCK));
+SPIClass SPI_4(to_digital(luna::pins::spi::ch4::MOSI),
+               to_digital(luna::pins::spi::ch4::MISO),
+               to_digital(luna::pins::spi::ch4::SCK));
+
+// SD Card
+
+SdSpiConfig flash_config(luna::pins::spi::cs::flash,
+                         SHARED_SPI,
+                         SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                         &SPI_3);
+SdSpiConfig sd_config(luna::pins::spi::cs::sd,
+                      SHARED_SPI,
+                      SD_SCK_MHZ(luna::config::SD_SPI_CLOCK_MHZ),
+                      &SPI_3);
+
+// Buzzer Controller
 
 on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL,
                                                luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
@@ -142,7 +150,6 @@ HardwareSerial &UART_RFD900X = Serial4;
 // Software data
 
 luna::sensor_data_t sensor_data;
-uint8_t             rx_buffer[luna::config::MESSAGE_BUFFER_SIZE];
 
 // Software filters
 struct software_filters {
@@ -187,8 +194,7 @@ luna::proto::raspi_cam           cam(UART_RPI);
 uint8_t                          cam_state = 0;
 
 // Software control
-dispatcher_type<32> dispatcher;
-bool                launch_override = false;
+bool launch_override = false;
 
 struct {
   uint8_t pressure     : 2 = 0b11;  // Use both sensors (averaging)
@@ -255,18 +261,23 @@ extern void fn1();
 
 // Mini
 [[noreturn]] void mini() {
+  // Variables
+  volatile uint32_t H;
+
   // Geiger counter setup
   pinMode(luna::pins::geiger::DIGITAL_READ, INPUT);
   pinMode(luna::pins::geiger::ANALOG_READ, INPUT_ANALOG);
   analogReadResolution(16);
 
-  auto geiger_callback = [&] {
-    volatile auto x = analogRead(luna::pins::geiger::ANALOG_READ);
+  auto register_count = [&] {
+    H = analogRead(luna::pins::geiger::ANALOG_READ);
     // todo: try print this
   };
 
-  attachInterrupt(to_digital(luna::pins::geiger::DIGITAL_READ),
-                  geiger_callback, RISING);
+  const uint32_t d_pin     = to_digital(luna::pins::geiger::DIGITAL_READ);
+  const uint32_t d_pin_int = digitalPinToInterrupt(d_pin);
+
+  attachInterrupt(d_pin_int, register_count, RISING);
 
   // Pause
   while (true);
@@ -447,28 +458,38 @@ void setup() {
   };
 
   // Task initialization
-  dispatcher << task_type(read_continuity, 500ul, micros, 0)
-             << task_type(buzzer_led_control, &buzzer_intervals, 0)  // Adaptive
-             << task_type(pyro_cutoff, 0)
+  rtos::create_loop(read_continuity, 128, 0);
+  rtos::create_loop(buzzer_led_control, 128, &buzzer_intervals, 0);
+  rtos::create_loop(pyro_cutoff, 128, 0);
 
-             << task_type(calculate_ground_truth, 0)
-             << task_type(fsm_eval, 25ul, millis, 0)
+  rtos::create_loop(calculate_ground_truth, 128, 0);
+  rtos::create_loop(fsm_eval, 128, 0, 25ul);
 
-             << (task_type(read_icm42688, 25ul, millis, 1), pvalid.imu_icm42688)
-             << (task_type(read_icm20948, 25ul, millis, 1), pvalid.imu_icm20948)
-             << (task_type(read_ms, &ms1_ref, 25ul, millis, 1), pvalid.ms1)
-             << (task_type(read_ms, &ms2_ref, 25ul, millis, 1), pvalid.ms2)
-             << task_type(synchronize_kf, 25ul, millis, 1)
+  if (pvalid.imu_icm42688)
+    rtos::create_loop(read_icm42688, 128, 1, 25ul);
 
-             << (task_type(read_gnss, 100ul, millis, 2), pvalid.gnss_m9v)
+  if (pvalid.imu_icm20948)
+    rtos::create_loop(read_icm20948, 128, 1, 25ul);
 
-             << task_type(accept_command, &UART_RFD900X, 100ul, millis, 252)
+  if (pvalid.ms1)
+    rtos::create_loop(read_ms, 128, &ms1_ref, 1, 25ul);
 
-             << task_type(construct_data, 25ul, millis, 253)
-             << (task_type(save_data, &log_interval, 254), pvalid.sd)  // Adaptive
-             << task_type(transmit_data, &tx_interval, 254)            // Adaptive
+  if (pvalid.ms2)
+    rtos::create_loop(read_ms, 128, &ms2_ref, 1, 25ul);
 
-             << task_type(read_internal, 500ul, millis, 255);
+  rtos::create_loop(synchronize_kf, 128, 1);
+
+  if (pvalid.gnss_m9v)
+    rtos::create_loop(read_gnss, 128, 1, 25ul);
+
+  rtos::create_loop(accept_command, 128, &UART_RFD900X, 3, 100ul);
+
+  rtos::create_loop(construct_data, 128, 4, 25ul);
+  if (pvalid.sd)
+    rtos::create_loop(save_data, 128, &log_interval, 4);
+  rtos::create_loop(transmit_data, 128, &tx_interval, 4);
+
+  rtos::create_loop(read_internal, 128, 7, 500ul);
 
   // Low power mode
   // See details: https://github.com/stm32duino/STM32LowPower/blob/main/README.md
@@ -518,10 +539,13 @@ void setup() {
   pwm_led.reset();
 
   gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
-  dispatcher.reset();
+
+  rtos::start();
 }
 
-void loop() { dispatcher(); }
+void loop() {
+  // Not used
+}
 
 template<typename SdType, typename FileType>
 void init_storage(FsUtil<SdType, FileType> &sd_util_instance) {
@@ -1189,6 +1213,10 @@ void fsm_eval() {
       buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL);
 
       do_nothing();
+      break;
+    }
+    case luna::state_t::LOG_ONLY: {
+      // <--- Next: wait for uplink --->
       break;
     }
     default:
