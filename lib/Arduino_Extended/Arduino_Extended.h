@@ -304,7 +304,8 @@ inline void i2c_detect(Stream &output_stream,
     output_stream.println("\n");
 }
 
-inline double pressure_altitude(const double pressure_hpa) {
+template<typename FP>
+FP pressure_altitude(const FP pressure_hpa) {
     constexpr double h0  = 44307.69396;
     constexpr double p0  = 1013.25;
     const double h_ratio = pressure_hpa / p0;
