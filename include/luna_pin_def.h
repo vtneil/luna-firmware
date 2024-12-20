@@ -111,13 +111,13 @@ namespace luna::pins {
     constexpr PinName DIGITAL_READ = PB_10;
   }  // namespace geiger
 
-  constexpr auto SET_LED = [](const int color) {
+  constexpr auto SET_LED = [](const int color) -> void {
     gpio_write << io_function::set(gpio::LED_R, BITS_AT(color, 2))
                << io_function::set(gpio::LED_G, BITS_AT(color, 1))
                << io_function::set(gpio::LED_B, BITS_AT(color, 0));
   };
 
-  constexpr auto PINS_OFF = [] {
+  constexpr auto PINS_OFF = []() -> void {
     gpio_write << io_function::pull_low(gpio::LED_R)
                << io_function::pull_low(gpio::LED_G)
                << io_function::pull_low(gpio::LED_B)
@@ -127,7 +127,7 @@ namespace luna::pins {
                << io_function::pull_low(pyro::SIG_C);
   };
 
-  constexpr auto PINS_RESTORE = [] {
+  constexpr auto PINS_RESTORE = []() -> void {
   };
 
   class PwmLed {

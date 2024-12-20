@@ -27,6 +27,7 @@ namespace traits {
 }  // namespace traits
 
 namespace stream {
+  inline const char *lf = "\n";
   inline const char *crlf = "\r\n";
 
   namespace detail {

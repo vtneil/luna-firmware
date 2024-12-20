@@ -6,6 +6,7 @@
  */
 
 #include "lib_xcore"
+#include "dispatcher"
 #include "vt_linalg"
 #include "vt_kalman"
 #include "avionics_algorithm.h"
@@ -33,17 +34,23 @@
 #include "luna_protocol.h"
 
 // Device specific
-#define THIS_DEVICE_ID      (0)
-#define THIS_FILE_PREFIX    "LUNA_LOGGER_0_"
-#define THIS_FILE_EXTENSION "CSV"
+#define THIS_DEVICE_ID             (0)
+#define THIS_FILE_PREFIX           "LUNA_LOGGER_0_"
+#define THIS_FILE_EXTENSION        "CSV"
+#define THIS_GEIGER_FILE_PREFIX    "LUNA_GEIGER_LOGGER_0_"
+#define THIS_GEIGER_FILE_EXTENSION "BIN"
 
 // #define HW_FORMAT_CARD
 
 // Type aliases
 
-using time_type               = uint32_t;
-using smart_delay             = xcore::nonblocking_delay<time_type>;
-using on_off_timer            = xcore::on_off_timer<time_type>;
+using time_type    = uint32_t;
+using smart_delay  = xcore::nonblocking_delay<time_type>;
+using on_off_timer = xcore::on_off_timer<time_type>;
+using task_type    = xcore::task_t<xcore::nonblocking_delay, time_type>;
+
+template<size_t N>
+using dispatcher_type         = xcore::task_dispatcher<N, xcore::nonblocking_delay, time_type>;
 
 using sd_sd_t                 = SdExFat;
 using sd_file_t               = ExFile;
@@ -194,7 +201,8 @@ luna::proto::raspi_cam           cam(UART_RPI);
 uint8_t                          cam_state = 0;
 
 // Software control
-bool launch_override = false;
+dispatcher_type<32> dispatcher;
+bool                launch_override = false;
 
 struct {
   uint8_t pressure     : 2 = 0b11;  // Use both sensors (averaging)
@@ -220,9 +228,20 @@ struct {
   luna::vec3_u<double> acc;
 } ground_truth;
 
-HardwareTimer      timer_led(TIM2);
-HardwareTimer      timer_buz(TIM3);
+HardwareTimer      timer_led(TIM3);
+HardwareTimer      timer_buz(TIM4);
 luna::pins::PwmLed pwm_led(timer_led, timer_buz);
+
+// Geiger Counter Variables
+
+constexpr int     GEIGER_READ_RESOLUTION           = 10;
+constexpr size_t  NUM_GEIGER_BINS                  = 1 << GEIGER_READ_RESOLUTION;
+volatile uint32_t geiger_val                       = 0;
+uint32_t          geiger_spectrum[NUM_GEIGER_BINS] = {};
+uint32_t          geiger_count                     = 0;
+double            geiger_cpm                       = 0.;
+String            geiger_filename;
+sd_file_t         geiger_file;
 
 template<typename SdType, typename FileType>
 extern void init_storage(FsUtil<SdType, FileType> &sd_util_instance);
@@ -257,21 +276,19 @@ extern void buzzer_led_control(on_off_timer::interval_params *intervals_ms);
 
 extern void raspi_cam_uart_daemon();
 
-extern void fn1();
+extern void calculate_geiger();
 
-// Mini
-[[noreturn]] void mini() {
-  // Variables
-  volatile uint32_t H;
+extern void save_geiger_spectrum();
 
+// Geiger counter add-on
+void setup_geiger() {
   // Geiger counter setup
   pinMode(luna::pins::geiger::DIGITAL_READ, INPUT);
   pinMode(luna::pins::geiger::ANALOG_READ, INPUT_ANALOG);
-  analogReadResolution(16);
+  analogReadResolution(10);
 
-  auto register_count = [&] {
-    H = analogRead(luna::pins::geiger::ANALOG_READ);
-    // todo: try print this
+  auto register_count = []() -> void {
+    geiger_val = analogRead(luna::pins::geiger::ANALOG_READ);
   };
 
   const uint32_t d_pin     = to_digital(luna::pins::geiger::DIGITAL_READ);
@@ -279,12 +296,13 @@ extern void fn1();
 
   attachInterrupt(d_pin_int, register_count, RISING);
 
-  // Pause
-  while (true);
+  // File setup
+  geiger_filename = sd_util.find_file_name(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
+  geiger_file     = sd_util.open<FsMode::WRITE>(geiger_filename);
 }
 
 void setup() {
-  mini();
+  setup_geiger();
 
   // GPIO and Digital Pins
   dout_low << luna::pins::gpio::LED_R
@@ -295,13 +313,15 @@ void setup() {
            << luna::pins::pyro::SIG_C
            << luna::pins::power::PIN_24V;
 
-  pwm_led.set_range(16, 255);
-  pwm_led.set_color(luna::YELLOW);
+  // LED setup
+  pwm_led.set_range(32, 255);
+  pwm_led.set_color(luna::MAGENTA);
   pwm_led.set_frequency(2);
   pwm_led.reset();
 
+  // Buzzer setup
   timer_buz.setOverflow(luna::config::BUZZER_ON_INTERVAL * 1000, MICROSEC_FORMAT);
-  timer_buz.attachInterrupt([] {
+  timer_buz.attachInterrupt([]() -> void {
     gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
     timer_buz.pause();
   });
@@ -409,7 +429,7 @@ void setup() {
     gnss_m9v.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, luna::config::UBLOX_CUSTOM_MAX_WAIT);
   }
 
-  auto pyro_cutoff = [] {
+  auto pyro_cutoff = []() -> void {
     static smart_delay sd_a(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
     static smart_delay sd_b(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
     static smart_delay sd_c(luna::config::PYRO_ACTIVATE_INTERVAL, millis);
@@ -422,7 +442,7 @@ void setup() {
         sd_a.reset();
         flag_a = true;
       } else {
-        sd_a([] {
+        sd_a([]() -> void {
           gpio_write << io_function::pull_low(luna::pins::pyro::SIG_A);
           sensor_data.pyro_a = luna::pyro_state_t::FIRED;
           flag_a             = false;
@@ -435,7 +455,7 @@ void setup() {
         sd_b.reset();
         flag_b = true;
       } else {
-        sd_b([] {
+        sd_b([]() -> void {
           gpio_write << io_function::pull_low(luna::pins::pyro::SIG_B);
           sensor_data.pyro_b = luna::pyro_state_t::FIRED;
           flag_b             = false;
@@ -448,7 +468,7 @@ void setup() {
         sd_c.reset();
         flag_c = true;
       } else {
-        sd_c([] {
+        sd_c([]() -> void {
           gpio_write << io_function::pull_low(luna::pins::pyro::SIG_C);
           sensor_data.pyro_c = luna::pyro_state_t::FIRED;
           flag_c             = false;
@@ -457,50 +477,18 @@ void setup() {
     }
   };
 
-  // Task initialization
-  rtos::create_loop(read_continuity, 128, 0);
-  rtos::create_loop(buzzer_led_control, 128, &buzzer_intervals, 0);
-  rtos::create_loop(pyro_cutoff, 128, 0);
-
-  rtos::create_loop(calculate_ground_truth, 128, 0);
-  rtos::create_loop(fsm_eval, 128, 0, 25ul);
-
-  if (pvalid.imu_icm42688)
-    rtos::create_loop(read_icm42688, 128, 1, 25ul);
-
-  if (pvalid.imu_icm20948)
-    rtos::create_loop(read_icm20948, 128, 1, 25ul);
-
-  if (pvalid.ms1)
-    rtos::create_loop(read_ms, 128, &ms1_ref, 1, 25ul);
-
-  if (pvalid.ms2)
-    rtos::create_loop(read_ms, 128, &ms2_ref, 1, 25ul);
-
-  rtos::create_loop(synchronize_kf, 128, 1);
-
-  if (pvalid.gnss_m9v)
-    rtos::create_loop(read_gnss, 128, 1, 25ul);
-
-  rtos::create_loop(accept_command, 128, &UART_RFD900X, 3, 100ul);
-
-  rtos::create_loop(construct_data, 128, 4, 25ul);
-  if (pvalid.sd)
-    rtos::create_loop(save_data, 128, &log_interval, 4);
-  rtos::create_loop(transmit_data, 128, &tx_interval, 4);
-
-  rtos::create_loop(read_internal, 128, 7, 500ul);
-
   // Low power mode
   // See details: https://github.com/stm32duino/STM32LowPower/blob/main/README.md
   LowPower.begin();
-  LowPower.enableWakeupFrom(&UART_RFD900X, [] {
+  LowPower.enableWakeupFrom(&UART_RFD900X, []() -> void {
     accept_command(&UART_RFD900X);
   });
 
   // Peripheral validation
+  pwm_led.disable();
+
   {
-    constexpr auto blink_green = [] {
+    constexpr auto blink_green = []() -> void {
       luna::pins::SET_LED(luna::BLUE);
       gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
       delay(luna::config::BUZZER_ON_INTERVAL);
@@ -509,7 +497,7 @@ void setup() {
       delay(250);
     };
 
-    constexpr auto blink_red = [] {
+    constexpr auto blink_red = []() -> void {
       luna::pins::SET_LED(luna::RED);
       gpio_write << io_function::pull_high(luna::pins::gpio::BUZZER);
       delay(luna::config::BUZZER_ON_INTERVAL * 5);
@@ -517,8 +505,6 @@ void setup() {
       gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
       delay(250);
     };
-
-    pwm_led.disable();
 
     for (const uint8_t status: pvalid.arr) {
       if (status) {
@@ -540,16 +526,38 @@ void setup() {
 
   gpio_write << io_function::pull_low(luna::pins::gpio::BUZZER);
 
-  rtos::start();
+  // Task initialization
+  dispatcher << task_type(read_continuity, 500ul, micros, 0)
+             << task_type(buzzer_led_control, &buzzer_intervals, 0)  // Adaptive
+             << task_type(pyro_cutoff, 0)
+
+             << task_type(calculate_ground_truth, 0)
+             << task_type(fsm_eval, 25ul, millis, 0)
+
+             << (task_type(read_icm42688, 25ul, millis, 1), pvalid.imu_icm42688)
+             << (task_type(read_icm20948, 25ul, millis, 1), pvalid.imu_icm20948)
+             << (task_type(read_ms, &ms1_ref, 25ul, millis, 1), pvalid.ms1)
+             << (task_type(read_ms, &ms2_ref, 25ul, millis, 1), pvalid.ms2)
+             << task_type(synchronize_kf, 25ul, millis, 1)
+
+             << (task_type(read_gnss, 100ul, millis, 2), pvalid.gnss_m9v)
+
+             << task_type(accept_command, &UART_RFD900X, 100ul, millis, 252)
+
+             << task_type(construct_data, 25ul, millis, 253)
+             << (task_type(save_data, &log_interval, 254), pvalid.sd)  // Adaptive
+             << task_type(transmit_data, &tx_interval, 254)            // Adaptive
+
+             << task_type(read_internal, 500ul, millis, 255);
+
+  dispatcher.reset();
 }
 
-void loop() {
-  // Not used
-}
+void loop() { dispatcher(); }
 
 template<typename SdType, typename FileType>
 void init_storage(FsUtil<SdType, FileType> &sd_util_instance) {
-  sd_util_instance.find_file_name(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
+  sd_util_instance.find_file_name_one(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
   sd_util_instance.template open_one<FsMode::WRITE>();
 }
 
@@ -891,7 +899,7 @@ void construct_data() {
     << sensor_data.timestamp_us
     << millis()
     << sensor_data.tx_pc++
-    << luna::state_string(sensor_data.ps)
+    << state_string(sensor_data.ps)
     << sensor_mode_string(sensor_mode.pressure)
     << sensor_mode_string(sensor_mode.acceleration)
 
@@ -899,9 +907,9 @@ void construct_data() {
     << String(sensor_data.gps_lon, 6)
     << String(ground_truth.altitude, 4)
 
-    << luna::pyro_state_string(sensor_data.pyro_a)
-    << luna::pyro_state_string(sensor_data.pyro_b)
-    << luna::pyro_state_string(sensor_data.pyro_c)
+    << pyro_state_string(sensor_data.pyro_a)
+    << pyro_state_string(sensor_data.pyro_b)
+    << pyro_state_string(sensor_data.pyro_c)
     << sensor_data.cont_a
     << sensor_data.cont_b
     << sensor_data.cont_c
@@ -1319,5 +1327,20 @@ void raspi_cam_uart_daemon() {
   });
 }
 
-void fn1() {
+void calculate_geiger() {
+  static constexpr uint32_t SAMPLE_INTERVAL_MS = 5000;
+  static smart_delay        when_sample(SAMPLE_INTERVAL_MS, millis);
+
+  ++geiger_spectrum[geiger_val];
+  if (geiger_val > 0) {
+    ++geiger_count;
+  }
+
+  when_sample([]() -> void {
+    geiger_cpm = static_cast<double>(geiger_count) / static_cast<double>(SAMPLE_INTERVAL_MS);
+    geiger_cpm *= 1000. * 60.;
+  });
+}
+
+void save_geiger_spectrum() {
 }
