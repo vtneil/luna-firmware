@@ -547,6 +547,7 @@ void setup() {
              << task_type(construct_data, 25ul, millis, 253)
              << (task_type(save_data, &log_interval, 254), pvalid.sd)  // Adaptive
              << task_type(transmit_data, &tx_interval, 254)            // Adaptive
+             << task_type(calculate_geiger, 254)
 
              << task_type(read_internal, 500ul, millis, 255);
 
@@ -1329,18 +1330,31 @@ void raspi_cam_uart_daemon() {
 
 void calculate_geiger() {
   static constexpr uint32_t SAMPLE_INTERVAL_MS = 5000;
+  static constexpr uint32_t SAVE_INTERVAL_MS   = 5000;
   static smart_delay        when_sample(SAMPLE_INTERVAL_MS, millis);
+  static smart_delay        when_save(SAVE_INTERVAL_MS, millis);
 
-  ++geiger_spectrum[geiger_val];
   if (geiger_val > 0) {
+    ++geiger_spectrum[geiger_val];
     ++geiger_count;
   }
 
   when_sample([]() -> void {
     geiger_cpm = static_cast<double>(geiger_count) / static_cast<double>(SAMPLE_INTERVAL_MS);
     geiger_cpm *= 1000. * 60.;
+    geiger_count = 0;
   });
+
+  when_save(save_geiger_spectrum);
 }
 
 void save_geiger_spectrum() {
+  for (size_t i = 0; i < NUM_GEIGER_BINS; ++i) {
+    for (size_t j = 0; j < 4; ++j) {
+      const uint8_t b = reinterpret_cast<const uint8_t *>(geiger_spectrum + i)[j];
+      geiger_file.write(b);
+    }
+    geiger_spectrum[i] = 0;
+  }
+  geiger_file.flush();
 }
