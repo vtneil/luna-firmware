@@ -107,8 +107,8 @@ namespace luna::pins {
   }  // namespace tmc2209
 
   namespace geiger {
-    constexpr PinName ANALOG_READ  = PB_11;
-    constexpr PinName DIGITAL_READ = PB_10;
+    constexpr PinName DIGITAL_READ = gpio::USER_1;
+    constexpr PinName ANALOG_READ  = gpio::USER_2;
   }  // namespace geiger
 
   constexpr auto SET_LED = [](const int color) -> void {

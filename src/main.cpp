@@ -285,17 +285,19 @@ extern void save_geiger_spectrum();
 
 // Geiger counter add-on
 void setup_geiger() {
+  static const uint32_t d_pin     = to_digital(luna::pins::geiger::DIGITAL_READ);
+  static const uint32_t d_pin_int = digitalPinToInterrupt(d_pin);
+  static const uint32_t a_pin     = digitalPinToAnalogInput(to_digital(luna::pins::geiger::ANALOG_READ));
+
   // Geiger counter setup
-  pinMode(luna::pins::geiger::DIGITAL_READ, INPUT);
-  pinMode(luna::pins::geiger::ANALOG_READ, INPUT_ANALOG);
-  analogReadResolution(10);
+  pinMode(d_pin, INPUT);
+  pinMode(a_pin, INPUT_ANALOG);
+  analogReadResolution(GEIGER_READ_RESOLUTION);
 
   auto register_count = []() -> void {
-    geiger_val = analogRead(luna::pins::geiger::ANALOG_READ);
+    geiger_val   = analogRead(a_pin);
+    geiger_valid = true;
   };
-
-  const uint32_t d_pin     = to_digital(luna::pins::geiger::DIGITAL_READ);
-  const uint32_t d_pin_int = digitalPinToInterrupt(d_pin);
 
   attachInterrupt(d_pin_int, register_count, RISING);
 
@@ -318,7 +320,7 @@ void setup() {
 
   // LED setup
   pwm_led.set_range(32, 255);
-  pwm_led.set_color(luna::MAGENTA);
+  pwm_led.set_color(luna::CYAN);
   pwm_led.set_frequency(2);
   pwm_led.reset();
 
@@ -900,7 +902,7 @@ void accept_command(HardwareSerial *istream) {
 void construct_data() {
   tx_data = "";
   csv_stream_crlf(tx_data)
-    << "<45>"
+    << "LUNA"
     << sensor_data.timestamp
     << sensor_data.timestamp_us
     << millis()
@@ -911,12 +913,13 @@ void construct_data() {
 
     << String(sensor_data.gps_lat, 6)
     << String(sensor_data.gps_lon, 6)
+    << String(sensor_data.gps_alt, 4)
     << String(ground_truth.altitude, 4)
 
     << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
     << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
 
-    << geiger_cpm
+    << String(geiger_cpm, 6)
 
     << sensor_data.cpu_temp
     << sensor_data.batt_v
@@ -1277,6 +1280,10 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
         onboard_led.value = luna::RGB_MASK::GREEN;
         break;
 
+      case luna::state_t::LOG_ONLY:
+        onboard_led.value = luna::RGB_MASK::GREEN;
+        break;
+
       default:
         onboard_led.value = luna::RGB_MASK::WHITE;
         break;
@@ -1331,9 +1338,6 @@ void calculate_geiger() {
   static smart_delay        when_sample(SAMPLE_INTERVAL_MS, millis);
   static smart_delay        when_save(SAVE_INTERVAL_MS, millis);
 
-  if (sensor_data.ps == luna::state_t::IDLE_SAFE)
-    return;
-
   if (geiger_valid && geiger_val > 0 && geiger_val < NUM_GEIGER_BINS) {
     ++geiger_spectrum[geiger_val];
     ++geiger_count;
@@ -1350,12 +1354,10 @@ void calculate_geiger() {
 }
 
 void save_geiger_spectrum() {
-  if (sensor_data.ps == luna::state_t::IDLE_SAFE)
-    return;
-
   const auto *read_buffer = reinterpret_cast<const uint8_t *>(geiger_spectrum);
 
   // Write
+  geiger_file.write(&sensor_data.timestamp, sizeof(uint32_t));
   geiger_file.write(read_buffer, sizeof(uint32_t) * NUM_GEIGER_BINS);
 
   // Flush
