@@ -913,21 +913,10 @@ void construct_data() {
     << String(sensor_data.gps_lon, 6)
     << String(ground_truth.altitude, 4)
 
-    << pyro_state_string(sensor_data.pyro_a)
-    << pyro_state_string(sensor_data.pyro_b)
-    << pyro_state_string(sensor_data.pyro_c)
-    << sensor_data.cont_a
-    << sensor_data.cont_b
-    << sensor_data.cont_c
-
     << sensor_data.ms1_temp << sensor_data.ms1_pres << sensor_data.ms1_alt
     << sensor_data.ms2_temp << sensor_data.ms2_pres << sensor_data.ms2_alt
 
-    << sensor_data.imu_1.acc.x << sensor_data.imu_1.acc.y << sensor_data.imu_1.acc.z
-    << sensor_data.imu_1.gyro.x << sensor_data.imu_1.gyro.y << sensor_data.imu_1.gyro.z
-
-    << sensor_data.imu_2.acc.x << sensor_data.imu_2.acc.y << sensor_data.imu_2.acc.z
-    << sensor_data.imu_2.gyro.x << sensor_data.imu_2.gyro.y << sensor_data.imu_2.gyro.z
+    << geiger_cpm
 
     << sensor_data.cpu_temp
     << sensor_data.batt_v
