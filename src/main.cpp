@@ -236,15 +236,13 @@ luna::pins::PwmLed pwm_led(timer_led, timer_buz);
 
 // Geiger Counter Variables
 
-constexpr int     GEIGER_READ_RESOLUTION           = 10;
+constexpr int     GEIGER_READ_RESOLUTION           = 12;
 constexpr size_t  NUM_GEIGER_BINS                  = 1 << GEIGER_READ_RESOLUTION;
 volatile uint32_t geiger_val                       = 0;
 volatile bool     geiger_valid                     = false;
 uint32_t          geiger_spectrum[NUM_GEIGER_BINS] = {};
 uint32_t          geiger_count                     = 0;
 double            geiger_cpm                       = 0.;
-String            geiger_filename;
-sd_file_t         geiger_file;
 
 template<typename SdType, typename FileType>
 extern void init_storage(FsUtil<SdType, FileType> &sd_util_instance);
@@ -300,15 +298,9 @@ void setup_geiger() {
   };
 
   attachInterrupt(d_pin_int, register_count, RISING);
-
-  // File setup
-  geiger_filename = sd_util.find_file_name(THIS_FILE_PREFIX, THIS_FILE_EXTENSION);
-  geiger_file     = sd_util.open<FsMode::WRITE>(geiger_filename);
 }
 
 void setup() {
-  setup_geiger();
-
   // GPIO and Digital Pins
   dout_low << luna::pins::gpio::LED_R
            << luna::pins::gpio::LED_G
@@ -519,6 +511,8 @@ void setup() {
       }
     }
   }
+
+  setup_geiger();
 
   tx_data.reserve(512);
   sd_data.reserve(768);
@@ -1357,11 +1351,14 @@ void save_geiger_spectrum() {
   const auto *read_buffer = reinterpret_cast<const uint8_t *>(geiger_spectrum);
 
   // Write
-  geiger_file.write(&sensor_data.timestamp, sizeof(uint32_t));
-  geiger_file.write(read_buffer, sizeof(uint32_t) * NUM_GEIGER_BINS);
+  sd_util.file() << sensor_data.timestamp;
+  for (unsigned long &v: geiger_spectrum) {
+    sd_util.file() << "," << v;
+  }
+  sd_util.file() << stream::crlf;
 
   // Flush
-  geiger_file.flush();
+  sd_util.flush_one();
 
   // Clear
   memset(geiger_spectrum, 0, sizeof(uint32_t) * NUM_GEIGER_BINS);
