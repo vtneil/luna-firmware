@@ -50,12 +50,14 @@ using on_off_timer = xcore::on_off_timer<time_type>;
 using task_type    = xcore::task_t<xcore::nonblocking_delay, time_type>;
 
 template<size_t N>
-using dispatcher_type         = xcore::task_dispatcher<N, xcore::nonblocking_delay, time_type>;
+using dispatcher_type = xcore::task_dispatcher<N, xcore::nonblocking_delay, time_type>;
 
-using sd_sd_t                 = SdExFat;
-using sd_file_t               = ExFile;
-using flash_sd_t              = SdFat32;
-using flash_file_t            = File32;
+using sd_sd_t         = SdExFat;
+using sd_file_t       = ExFile;
+using flash_sd_t      = SdFat32;
+using flash_file_t    = File32;
+
+// Kalman Filter Parameters
 
 constexpr size_t FILTER_ORDER = 4;
 constexpr double dt_base      = 0.1;
@@ -146,7 +148,7 @@ SdSpiConfig sd_config(luna::pins::spi::cs::sd,
 
 on_off_timer::interval_params buzzer_intervals(luna::config::BUZZER_ON_INTERVAL,
                                                luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_IDLE_INTERVAL));
-bool                          enable_buzzer = true;
+bool                          buzzer_enabled = true;
 
 // Hardware references
 
@@ -237,6 +239,7 @@ luna::pins::PwmLed pwm_led(timer_led, timer_buz);
 constexpr int     GEIGER_READ_RESOLUTION           = 10;
 constexpr size_t  NUM_GEIGER_BINS                  = 1 << GEIGER_READ_RESOLUTION;
 volatile uint32_t geiger_val                       = 0;
+volatile bool     geiger_valid                     = false;
 uint32_t          geiger_spectrum[NUM_GEIGER_BINS] = {};
 uint32_t          geiger_count                     = 0;
 double            geiger_cpm                       = 0.;
@@ -762,8 +765,7 @@ void accept_command(HardwareSerial *istream) {
     }
 
   } else if (command == "shutup") {
-    enable_buzzer = !enable_buzzer;
-    pwm_led.set_buzzer(enable_buzzer);
+    pwm_led.set_buzzer(buzzer_enabled = !buzzer_enabled);
     pwm_led.reset();
 
   } else if (command == "manual-trigger-a") {
@@ -884,7 +886,10 @@ void accept_command(HardwareSerial *istream) {
 
   } else if (command == "cam-query") {
     cam.get_status();
-
+  } else if (command == "log-only") {
+    sensor_data.ps = luna::state_t::LOG_ONLY;
+    tx_interval    = luna::config::TX_LOG_ONLY_INTERVAL;
+    log_interval   = luna::config::LOG_LOG_ONLY_INTERVAL;
   } else {
     // <--- Unknown command: send back nack --->
     ++sensor_data.last_nack;
@@ -946,19 +951,19 @@ void transmit_data(time_type *interval_ms) {
 
 void save_data(time_type *interval_ms) {
   static time_type   prev = *interval_ms;
-  static smart_delay sd(*interval_ms, millis);
-  static smart_delay sd_save(1000, millis);
+  static smart_delay when_write(*interval_ms, millis);
+  static smart_delay when_save(1000, millis);
 
   if (prev != *interval_ms) {
-    sd.set_interval(*interval_ms);
+    when_write.set_interval(*interval_ms);
     prev = *interval_ms;
   }
 
-  sd([&]() -> void {
+  when_write([&]() -> void {
     sd_util.file() << tx_data;
   });
 
-  sd_save([&]() -> void {
+  when_save([&]() -> void {
     sd_util.flush_one();
   });
 }
@@ -1226,6 +1231,9 @@ void fsm_eval() {
     }
     case luna::state_t::LOG_ONLY: {
       // <--- Next: wait for uplink --->
+      buzzer_intervals.t_off = luna::config::BUZZER_OFF_INTERVAL(luna::config::BUZZER_ASCEND_INTERVAL);
+
+      do_nothing();
       break;
     }
     default:
@@ -1294,7 +1302,7 @@ void buzzer_led_control(on_off_timer::interval_params *intervals_ms) {
     if (sensor_data.ps == luna::state_t::PAD_PREOP) {
       pwm_led.set_buzzer(false);
     } else {
-      pwm_led.set_buzzer(enable_buzzer);
+      pwm_led.set_buzzer(buzzer_enabled);
     }
 
     pwm_led.reset();
@@ -1334,9 +1342,13 @@ void calculate_geiger() {
   static smart_delay        when_sample(SAMPLE_INTERVAL_MS, millis);
   static smart_delay        when_save(SAVE_INTERVAL_MS, millis);
 
-  if (geiger_val > 0) {
+  if (sensor_data.ps == luna::state_t::IDLE_SAFE)
+    return;
+
+  if (geiger_valid && geiger_val > 0 && geiger_val < NUM_GEIGER_BINS) {
     ++geiger_spectrum[geiger_val];
     ++geiger_count;
+    geiger_valid = false;
   }
 
   when_sample([]() -> void {
@@ -1349,12 +1361,17 @@ void calculate_geiger() {
 }
 
 void save_geiger_spectrum() {
-  for (size_t i = 0; i < NUM_GEIGER_BINS; ++i) {
-    for (size_t j = 0; j < 4; ++j) {
-      const uint8_t b = reinterpret_cast<const uint8_t *>(geiger_spectrum + i)[j];
-      geiger_file.write(b);
-    }
-    geiger_spectrum[i] = 0;
-  }
+  if (sensor_data.ps == luna::state_t::IDLE_SAFE)
+    return;
+
+  const auto *read_buffer = reinterpret_cast<const uint8_t *>(geiger_spectrum);
+
+  // Write
+  geiger_file.write(read_buffer, sizeof(uint32_t) * NUM_GEIGER_BINS);
+
+  // Flush
   geiger_file.flush();
+
+  // Clear
+  memset(geiger_spectrum, 0, sizeof(uint32_t) * NUM_GEIGER_BINS);
 }
